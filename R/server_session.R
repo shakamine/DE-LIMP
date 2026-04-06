@@ -683,12 +683,16 @@ server_session <- function(input, output, session, values, add_to_log) {
           values$dda_casanovo_psms           <- session_data$dda_casanovo_psms
           values$dda_casanovo_classification <- session_data$dda_casanovo_classification
           values$dda_casanovo_status         <- session_data$dda_casanovo_status %||% "done"
+          # Also set unified reactives directly (don't rely on adapter observer timing)
+          values$denovo_psms           <- session_data$dda_casanovo_psms
+          values$denovo_classification <- session_data$dda_casanovo_classification
           message("[Session] Restored Casanovo state: ",
                   nrow(session_data$dda_casanovo_psms), " de novo PSMs")
         }
         # Restore BLAST results
         if (!is.null(session_data$dda_casanovo_blast)) {
           values$dda_casanovo_blast <- session_data$dda_casanovo_blast
+          values$denovo_blast      <- session_data$dda_casanovo_blast
           message("[Session] Restored BLAST results: ",
                   nrow(session_data$dda_casanovo_blast), " hits")
         }
@@ -733,10 +737,44 @@ server_session <- function(input, output, session, values, add_to_log) {
 
       values$status <- "Session loaded successfully"
       removeModal()
-      showNotification(
-        paste0("Session loaded! (saved ", format(session_data$saved_at, "%Y-%m-%d %H:%M"), ")"),
-        type = "message", duration = 5
-      )
+
+      # Auto-navigate to the most relevant tab
+      if (!is.null(session_data$dda_casanovo_classification) ||
+          !is.null(session_data$denovo_engine)) {
+        # DDA/de novo session — go to De Novo results
+        nav_show("main_tabs", "De Novo")
+        # Delay nav_select to let bslib render the tab container first.
+        # Increment denovo_session_trigger to force all De Novo renders to
+        # re-evaluate — they depend on this trigger because outputOptions
+        # suspendWhenHidden=FALSE alone isn't sufficient for plotly/DT outputs
+        # inside navset_card_tab sub-tabs that were hidden at startup.
+        later::later(function() {
+          nav_select("main_tabs", "De Novo")
+          # Fire trigger after another flush cycle so sub-tab containers exist
+          later::later(function() {
+            values$denovo_session_trigger <- isolate(values$denovo_session_trigger) + 1L
+            message("[Session] De Novo trigger fired: ", values$denovo_session_trigger)
+          }, delay = 0.3)
+        }, delay = 0.5)
+        showNotification(
+          sprintf("Session loaded! %s Casanovo PSMs, %s BLAST hits. Showing De Novo results.",
+            format(nrow(session_data$dda_casanovo_psms %||% data.frame()), big.mark = ","),
+            format(nrow(session_data$dda_casanovo_blast %||% data.frame()), big.mark = ",")),
+          type = "message", duration = 8
+        )
+      } else if (!is.null(values$fit)) {
+        # DIA session — go to DE Dashboard
+        nav_select("main_tabs", "DE Dashboard")
+        showNotification(
+          paste0("Session loaded! (saved ", format(session_data$saved_at, "%Y-%m-%d %H:%M"), ")"),
+          type = "message", duration = 5
+        )
+      } else {
+        showNotification(
+          paste0("Session loaded! (saved ", format(session_data$saved_at, "%Y-%m-%d %H:%M"), ")"),
+          type = "message", duration = 5
+        )
+      }
 
       # Record to activity log
       tryCatch({

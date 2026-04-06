@@ -524,6 +524,7 @@ server <- function(input, output, session) {
     dda_casanovo_mztab_dir     = NULL,    # Remote path to mztab output dir
     dda_casanovo_psms          = NULL,    # data.table: parsed de novo PSMs
     dda_casanovo_classification = NULL,   # List from classify_dda_denovo()
+    dda_db_engine              = "Sage", # "Sage" or "DIA-NN" — which DB search engine was used
     dda_casanovo_blast         = NULL,    # data.frame: DIAMOND BLAST results for DDA novel peptides
     dda_filtered_classification = NULL,  # List from classify_dda_denovo() — filtered by confidence slider
     dda_fasta_path             = NULL,    # Remote FASTA path used for DDA search (for DIAMOND)
@@ -533,6 +534,7 @@ server <- function(input, output, session) {
     denovo_blast = NULL,
     denovo_engine = NULL,
     denovo_reference = NULL,
+    denovo_session_trigger = 0L,  # Incremented after session restore to force render invalidation
     # App metadata
     app_version = app_version,
     community_stats = community_stats

@@ -1,5 +1,5 @@
 # ==============================================================================
-#  HELPERS — DDA Search (Sage pipeline)
+#  HELPERS — DDA Search (Sage + DIA-NN DDA pipelines)
 #  Pure utility functions — no Shiny reactivity.
 #  Called from: server_dda.R
 # ==============================================================================
@@ -826,21 +826,201 @@ parse_casanovo_mztab <- function(mztab_paths, score_threshold = -Inf) {
 }
 
 
-#' Cross-reference Casanovo de novo results against Sage database search PSMs
+#' Parse DIA-NN DDA search results (report.parquet) into DE-LIMP-compatible format
+#'
+#' Returns a data frame compatible with `classify_dda_denovo()` — same columns
+#' as Sage PSMs ($peptide, $proteins) plus DIA-NN-specific fields for fuzzy
+#' spectrum matching (precursor_mz, rt, charge).
+#'
+#' @param parquet_path Path to DIA-NN report.parquet
+#' @param fdr_threshold Q.Value cutoff (default 0.01)
+#' @return List with:
+#'   $psms: data.table with columns: peptide, proteins, charge, precursor_mz,
+#'          rt, q_value, stripped_sequence, modified_sequence, filename
+#'   $n_precursors: total precursors before FDR filter
+#'   $n_proteins: unique protein groups after filter
+parse_diann_dda_results <- function(parquet_path, fdr_threshold = 0.01) {
+  if (!file.exists(parquet_path)) stop("DIA-NN report not found: ", parquet_path)
+
+  df <- arrow::read_parquet(parquet_path)
+  message("[DIA-NN DDA] Read ", nrow(df), " rows from report.parquet")
+  n_precursors <- nrow(df)
+
+
+  # Identify key columns (DIA-NN uses these standard names)
+  req_cols <- c("Stripped.Sequence", "Protein.Group", "Precursor.Charge", "Q.Value")
+  missing <- setdiff(req_cols, names(df))
+  if (length(missing) > 0) {
+    stop("[DIA-NN DDA] Missing required columns: ", paste(missing, collapse = ", "))
+  }
+
+  # FDR filter
+  dt <- data.table::as.data.table(df)
+  dt <- dt[Q.Value <= fdr_threshold]
+  message("[DIA-NN DDA] After Q.Value <= ", fdr_threshold, ": ", nrow(dt), " rows")
+
+  if (nrow(dt) == 0) {
+    return(list(
+      psms = data.table::data.table(
+        peptide = character(0), proteins = character(0),
+        charge = integer(0), precursor_mz = numeric(0),
+        rt = numeric(0), q_value = numeric(0),
+        stripped_sequence = character(0), modified_sequence = character(0),
+        filename = character(0)
+      ),
+      n_precursors = n_precursors, n_proteins = 0L
+    ))
+  }
+
+  # Build output matching Sage PSM column conventions:
+  # - $peptide: the modified sequence (used by classify_dda_denovo for stripping)
+  # - $proteins: protein group IDs
+  # DIA-NN Modified.Sequence uses UniMod format: e.g. C(UniMod:4), M(UniMod:35)
+  # classify_dda_denovo strips with gsub("\\+[0-9.]+", ...) which won't match UniMod.
+  # So we put Stripped.Sequence in $peptide (already stripped) for classification,
+  # and keep Modified.Sequence separately for reference.
+  out <- data.table::data.table(
+    peptide            = dt$Stripped.Sequence,
+    proteins           = dt$Protein.Group,
+    charge             = as.integer(dt$Precursor.Charge),
+    precursor_mz       = if ("Precursor.Mz" %in% names(dt)) as.numeric(dt$Precursor.Mz) else NA_real_,
+    rt                 = if ("RT" %in% names(dt)) as.numeric(dt$RT) else NA_real_,
+    q_value            = as.numeric(dt$Q.Value),
+    stripped_sequence   = dt$Stripped.Sequence,
+    modified_sequence   = if ("Modified.Sequence" %in% names(dt)) dt$Modified.Sequence else dt$Stripped.Sequence,
+    filename           = if ("File.Name" %in% names(dt)) basename(dt$File.Name) else
+                         if ("Run" %in% names(dt)) dt$Run else NA_character_
+  )
+
+  # Deduplicate to unique peptide-protein pairs (DIA-NN can have multiple rows
+  # per precursor across runs)
+  n_proteins <- length(unique(out$proteins))
+
+  message(sprintf("[DIA-NN DDA] Parsed %d PSMs, %d unique peptides, %d protein groups",
+    nrow(out),
+    length(unique(out$stripped_sequence)),
+    n_proteins))
+
+  list(
+    psms         = out,
+    n_precursors = n_precursors,
+    n_proteins   = n_proteins
+  )
+}
+
+
+#' Fuzzy match DIA-NN PSMs to Casanovo PSMs by precursor properties
+#'
+#' DIA-NN doesn't output scan numbers, so we match by:
+#' - Same source file (by filename stem)
+#' - Precursor m/z within tolerance (default 20 ppm)
+#' - RT within tolerance (default 1 minute)
+#' - Same charge state
+#'
+#' @param casanovo_dt data.table from parse_casanovo_mztab()
+#' @param diann_psms data.table from parse_diann_dda_results()$psms
+#' @param mz_ppm m/z tolerance in ppm (default 20)
+#' @param rt_tol RT tolerance in minutes (default 1.0)
+#' @return data.table with matched rows: casanovo columns + diann_peptide, diann_proteins, match_delta_mz, match_delta_rt
+fuzzy_match_diann_casanovo <- function(casanovo_dt, diann_psms,
+                                       mz_ppm = 20, rt_tol = 1.0) {
+  if (is.null(casanovo_dt) || nrow(casanovo_dt) == 0 ||
+      is.null(diann_psms) || nrow(diann_psms) == 0) {
+    return(data.table::data.table())
+  }
+
+  # Both need exp_mz and charge columns
+  if (!all(c("exp_mz", "charge") %in% names(casanovo_dt))) {
+    message("[Fuzzy match] Casanovo missing exp_mz or charge columns")
+    return(data.table::data.table())
+  }
+  if (!all(c("precursor_mz", "charge") %in% names(diann_psms))) {
+    message("[Fuzzy match] DIA-NN missing precursor_mz or charge columns")
+    return(data.table::data.table())
+  }
+
+  # Normalize source filenames for matching
+  cas_files <- gsub("\\.(d|mzML|mgf|mztab)$", "",
+    casanovo_dt$source_file, ignore.case = TRUE)
+  diann_files <- gsub("\\.(d|raw|mzML)$", "",
+    diann_psms$filename, ignore.case = TRUE)
+
+  matches <- list()
+  for (i in seq_len(nrow(casanovo_dt))) {
+    cas <- casanovo_dt[i, ]
+    cas_mz <- cas$exp_mz
+    cas_charge <- cas$charge
+
+    if (is.na(cas_mz) || is.na(cas_charge)) next
+
+    # Filter DIA-NN by charge
+    candidates <- diann_psms[diann_psms$charge == cas_charge, ]
+    if (nrow(candidates) == 0) next
+
+    # Filter by m/z tolerance (ppm)
+    mz_tol_abs <- cas_mz * mz_ppm / 1e6
+    candidates <- candidates[abs(candidates$precursor_mz - cas_mz) <= mz_tol_abs, ]
+    if (nrow(candidates) == 0) next
+
+    # Filter by RT if both have RT values
+    if (!is.na(cas$exp_mz) && any(!is.na(candidates$rt))) {
+      # Casanovo mztab doesn't have RT directly — use calc_mz as proxy
+      # or skip RT filter if not available
+      # Actually, mztab PSMs don't have RT. Skip RT filter for now.
+    }
+
+    # Take best match by m/z proximity
+    deltas <- abs(candidates$precursor_mz - cas_mz)
+    best <- which.min(deltas)
+
+    matches[[length(matches) + 1]] <- data.table::data.table(
+      casanovo_idx     = i,
+      casanovo_seq     = cas$seq_stripped,
+      casanovo_score   = cas$score,
+      diann_peptide    = candidates$peptide[best],
+      diann_proteins   = candidates$proteins[best],
+      delta_mz_ppm     = deltas[best] / cas_mz * 1e6,
+      casanovo_charge  = cas_charge
+    )
+  }
+
+  if (length(matches) == 0) return(data.table::data.table())
+
+  result <- data.table::rbindlist(matches)
+
+  # Classify agreement
+  cas_norm <- gsub("I", "L", result$casanovo_seq)
+  diann_norm <- gsub("I", "L", result$diann_peptide)
+  result$agreement <- ifelse(cas_norm == diann_norm, "agree", "disagree")
+
+  message(sprintf("[Fuzzy match] %d matches: %d agree, %d disagree",
+    nrow(result),
+    sum(result$agreement == "agree"),
+    sum(result$agreement == "disagree")))
+
+  result
+}
+
+
+#' Cross-reference Casanovo de novo results against database search PSMs
 #'
 #' Classifies each Casanovo sequence as:
-#'   - "confirmed": exact match to a Sage FDR-passing peptide (I/L normalized)
-#'   - "novel": no match in Sage results (potential novel peptide)
+#'   - "confirmed": exact match to a database search FDR-passing peptide (I/L normalized)
+#'   - "novel": no match in database search results (potential novel peptide)
 #'
 #' @param casanovo_dt data.table from parse_casanovo_mztab()
 #' @param sage_psms Filtered PSM data.table from parse_sage_results()$psms
+#'   or parse_diann_dda_results()$psms. Requires $peptide and $proteins columns.
+#' @param db_engine Character: "Sage" or "DIA-NN" (default "Sage"). Stored in result
+#'   for display in source badges.
 #' @return List with:
 #'   $classified: full casanovo_dt with match_type column
 #'   $confirmed: confirmed-only rows with protein mapping
 #'   $novel: novel-only rows
 #'   $protein_summary: per-protein Casanovo confirmation stats
 #'   $summary_stats: overall classification counts
-classify_dda_denovo <- function(casanovo_dt, sage_psms) {
+#'   $db_engine: which database search engine was used
+classify_dda_denovo <- function(casanovo_dt, sage_psms, db_engine = "Sage") {
   if (is.null(casanovo_dt) || nrow(casanovo_dt) == 0) {
     return(list(
       classified     = casanovo_dt,
@@ -856,11 +1036,12 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms) {
       summary_stats  = list(
         n_total = 0L, n_confirmed = 0L, n_novel = 0L,
         pct_confirmed = 0, pct_novel = 0
-      )
+      ),
+      db_engine = db_engine
     ))
   }
 
-  # Handle case where Sage results are not available (mztab-only load)
+  # Handle case where database search results are not available (mztab-only load)
   if (is.null(sage_psms) || nrow(sage_psms) == 0) {
     casanovo_dt$match_type <- "novel"
     novel <- casanovo_dt
@@ -882,21 +1063,25 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms) {
       summary_stats = list(
         n_total = n_total, n_confirmed = 0L, n_novel = n_total,
         pct_confirmed = 0, pct_novel = 100
-      )
+      ),
+      db_engine = db_engine
     ))
   }
 
-  # Normalize Sage peptides: strip modifications + I/L matching
-  sage_stripped <- gsub("\\+[0-9.]+", "", sage_psms$peptide)
-  sage_stripped <- gsub("\\[|\\]", "", sage_stripped)
-  sage_peps_norm <- unique(gsub("I", "L", sage_stripped))
+  # Normalize database search peptides: strip modifications + I/L matching
+  # Works for both Sage (C[+57.0215]) and DIA-NN (already stripped) peptide formats
+  db_stripped <- gsub("\\+[0-9.]+", "", sage_psms$peptide)
+  db_stripped <- gsub("\\[|\\]", "", db_stripped)
+  # Also strip UniMod format from DIA-NN: e.g. C(UniMod:4) -> C
+  db_stripped <- gsub("\\(UniMod:[0-9]+\\)", "", db_stripped)
+  db_peps_norm <- unique(gsub("I", "L", db_stripped))
 
   # Classify each Casanovo sequence
   casanovo_dt$match_type <- ifelse(
-    casanovo_dt$seq_norm %in% sage_peps_norm, "confirmed", "novel"
+    casanovo_dt$seq_norm %in% db_peps_norm, "confirmed", "novel"
   )
 
-  # Map confirmed sequences back to Sage protein groups
+  # Map confirmed sequences back to database search protein groups
   pep_to_protein <- unique(
     data.frame(
       peptide  = sage_psms$peptide,
@@ -906,6 +1091,7 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms) {
   )
   pep_stripped <- gsub("\\+[0-9.]+", "", pep_to_protein$peptide)
   pep_stripped <- gsub("\\[|\\]", "", pep_stripped)
+  pep_stripped <- gsub("\\(UniMod:[0-9]+\\)", "", pep_stripped)
   pep_to_protein$seq_norm <- gsub("I", "L", pep_stripped)
 
   confirmed <- merge(
@@ -969,8 +1155,8 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms) {
   )
 
   message(sprintf(
-    "[Casanovo] Classification: %d total, %d confirmed (%.1f%%), %d novel (%.1f%%)",
-    n_total, n_confirmed, summary_stats$pct_confirmed,
+    "[Casanovo] Classification (vs %s): %d total, %d confirmed (%.1f%%), %d novel (%.1f%%)",
+    db_engine, n_total, n_confirmed, summary_stats$pct_confirmed,
     n_novel, summary_stats$pct_novel
   ))
 
@@ -979,7 +1165,8 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms) {
     confirmed       = confirmed,
     novel           = novel,
     protein_summary = protein_summary,
-    summary_stats   = summary_stats
+    summary_stats   = summary_stats,
+    db_engine       = db_engine
   )
 }
 

@@ -17,23 +17,36 @@ server_denovo_controls <- function(input, output, session, values) {
   # Core filtered reactive — ALL downstream renders should use this
 
   filtered_casanovo_psms <- reactive({
+    # Depend on session trigger to force re-evaluation after session restore
+    # (outputs inside hidden navset_card_tab are suspended and miss reactive changes)
+    values$denovo_session_trigger
     # Use unified reactive (works for both Casanovo and Cascadia)
     psms <- values$denovo_psms %||% values$dda_casanovo_psms
+    message("[denovo_controls] filtered_casanovo_psms: psms is ",
+      if (is.null(psms)) "NULL" else paste(nrow(psms), "rows"))
     req(psms)
     req(nrow(psms) > 0)
 
     threshold <- input$dda_denovo_score_threshold %||% 0.9
-    psms[psms$score >= threshold, ]
+    result <- psms[psms$score >= threshold, ]
+    message("[denovo_controls] filtered: ", nrow(result), " PSMs above threshold ", threshold)
+    result
   })
 
 
   # Filtered classification: re-classifies using the filtered PSMs
   filtered_classification <- reactive({
     psms <- filtered_casanovo_psms()
+    message("[denovo_controls] filtered_classification: psms=", nrow(psms),
+      " denovo_classification=", !is.null(values$denovo_classification))
     req(nrow(psms) > 0)
 
-    # For Cascadia mode, use the pre-computed classification from the adapter
-    if (isTRUE(values$denovo_engine == "cascadia") && !is.null(values$denovo_classification)) {
+    # Use pre-computed classification from the adapter when available
+    # (works for both Cascadia and Casanovo after session restore or initial load)
+    if (!is.null(values$denovo_classification)) {
+      message("[denovo_controls] Using stored classification: ",
+        nrow(values$denovo_classification$confirmed), " confirmed, ",
+        nrow(values$denovo_classification$novel), " novel")
       return(values$denovo_classification)
     }
 
@@ -108,7 +121,9 @@ server_denovo_controls <- function(input, output, session, values) {
 
   # --- Override summary cards to use filtered data ---
   output$dda_denovo_summary_cards <- renderUI({
+    message("[denovo_controls] dda_denovo_summary_cards render called")
     cls <- filtered_classification()
+    message("[denovo_controls] summary_cards got classification: ", !is.null(cls))
     req(cls)
 
     n_total     <- cls$summary_stats$n_total
@@ -283,6 +298,7 @@ server_denovo_controls <- function(input, output, session, values) {
 
   # --- Override score distribution to use filtered threshold line ---
   output$dda_denovo_score_dist <- plotly::renderPlotly({
+    values$denovo_session_trigger
     req(values$dda_casanovo_psms)
     req(nrow(values$dda_casanovo_psms) > 0)
 
@@ -1061,5 +1077,14 @@ server_denovo_controls <- function(input, output, session, values) {
       )
     ))
   })
+
+  # ==========================================================================
+  #  Force outputs to evaluate even when De Novo tab is hidden.
+  #  Without this, session restore sets reactive values BEFORE nav_show(),
+  #  and the suspended outputs never see the change.
+  # ==========================================================================
+  outputOptions(output, "dda_denovo_summary_cards",    suspendWhenHidden = FALSE)
+  outputOptions(output, "dda_denovo_threshold_count",  suspendWhenHidden = FALSE)
+  outputOptions(output, "denovo_source_badge",         suspendWhenHidden = FALSE)
 
 }

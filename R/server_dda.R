@@ -572,13 +572,25 @@ server_dda <- function(input, output, session, values, add_to_log) {
         local_tmp <- file.path(tempdir(), "dda_load")
         dir.create(local_tmp, showWarnings = FALSE, recursive = TRUE)
 
-        # Try to load Sage results (optional — may only have Casanovo mztabs)
+        # Try to load database search results: Sage first, then DIA-NN
+        # Track which engine was used for source badge
+        db_engine <- "Sage"  # default
+
+        # --- Sage: results.sage.tsv ---
         results_remote <- file.path(remote_dir, "results.sage.tsv")
         results_local <- file.path(local_tmp, "results.sage.tsv")
         tryCatch(scp_download(ssh_cfg, results_remote, results_local), error = function(e) NULL)
 
         parsed <- NULL
-        if (file.exists(results_local) && file.info(results_local)$size > 100) {
+        sage_found <- file.exists(results_local) && file.info(results_local)$size > 100
+
+        # --- DIA-NN: report.parquet ---
+        diann_remote <- file.path(remote_dir, "report.parquet")
+        diann_local <- file.path(local_tmp, "report.parquet")
+        tryCatch(scp_download(ssh_cfg, diann_remote, diann_local), error = function(e) NULL)
+        diann_found <- file.exists(diann_local) && file.info(diann_local)$size > 100
+
+        if (sage_found) {
           setProgress(0.3, detail = "Parsing Sage results...")
 
           # Check for lfq.tsv
@@ -594,12 +606,35 @@ server_dda <- function(input, output, session, values, add_to_log) {
           values$dda_sage_psms    <- parsed$psms
           values$dda_lfq_wide     <- parsed$lfq_wide
           values$dda_protein_meta <- parsed$protein_meta
+          db_engine <- "Sage"
           message("[DDA Load] Loaded ", nrow(parsed$psms), " Sage PSMs")
+        } else if (diann_found) {
+          setProgress(0.3, detail = "Parsing DIA-NN DDA results...")
+
+          diann_parsed <- tryCatch(
+            parse_diann_dda_results(diann_local, fdr_threshold = 0.01),
+            error = function(e) {
+              message("[DDA Load] DIA-NN parse error: ", e$message)
+              NULL
+            }
+          )
+
+          if (!is.null(diann_parsed) && nrow(diann_parsed$psms) > 0) {
+            # Store DIA-NN PSMs in the same slot as Sage for classification
+            values$dda_sage_psms <- diann_parsed$psms
+            db_engine <- "DIA-NN"
+            # Create a minimal parsed list so downstream code works
+            parsed <- list(psms = diann_parsed$psms)
+            message("[DDA Load] Loaded ", nrow(diann_parsed$psms), " DIA-NN PSMs")
+          } else {
+            message("[DDA Load] DIA-NN parquet found but no passing PSMs")
+          }
         } else {
-          message("[DDA Load] No Sage results found — loading Casanovo/BLAST only")
+          message("[DDA Load] No Sage or DIA-NN results found — loading Casanovo/BLAST only")
         }
-        values$dda_output_dir   <- remote_dir
-        values$dda_status       <- "loaded"
+        values$dda_output_dir    <- remote_dir
+        values$dda_status        <- "loaded"
+        values$dda_db_engine     <- db_engine
 
         setProgress(0.5, detail = "Checking for Casanovo results...")
 
@@ -665,12 +700,14 @@ server_dda <- function(input, output, session, values, add_to_log) {
           if (length(mztab_local) > 0) {
             casanovo_psms <- parse_casanovo_mztab(mztab_local, score_threshold = 0.9)
             if (nrow(casanovo_psms) > 0) {
-              sage_psms <- if (!is.null(parsed)) parsed$psms else NULL
-              classified <- classify_dda_denovo(casanovo_psms, sage_psms)
+              db_psms <- if (!is.null(parsed)) parsed$psms else NULL
+              classified <- classify_dda_denovo(casanovo_psms, db_psms,
+                db_engine = db_engine)
               values$dda_casanovo_psms <- casanovo_psms
               values$dda_casanovo_classification <- classified
               values$dda_casanovo_status <- "done"
-              message("[DDA Load] Loaded ", nrow(casanovo_psms), " Casanovo PSMs, ",
+              message("[DDA Load] Loaded ", nrow(casanovo_psms), " Casanovo PSMs (vs ",
+                      db_engine, "), ",
                       nrow(classified$confirmed), " confirmed, ",
                       nrow(classified$novel), " novel")
             }
@@ -803,13 +840,18 @@ echo "[DIAMOND] Done: $(date)"
 
         setProgress(0.95, detail = "Done!")
 
-        n_psms <- nrow(parsed$psms)
+        n_psms <- if (!is.null(parsed)) nrow(parsed$psms) else 0
         n_casanovo <- if (!is.null(values$dda_casanovo_psms)) nrow(values$dda_casanovo_psms) else 0
         n_blast <- if (!is.null(values$dda_casanovo_blast)) nrow(values$dda_casanovo_blast) else 0
         removeModal()
-        parts <- c(sprintf("%s Sage PSMs", format(n_psms, big.mark = ",")))
+        parts <- character(0)
+        if (n_psms > 0) {
+          parts <- c(parts, sprintf("%s %s PSMs",
+            format(n_psms, big.mark = ","), db_engine))
+        }
         if (n_casanovo > 0) parts <- c(parts, sprintf("%s Casanovo PSMs", format(n_casanovo, big.mark = ",")))
         if (n_blast > 0) parts <- c(parts, sprintf("%s BLAST hits", format(n_blast, big.mark = ",")))
+        if (length(parts) == 0) parts <- "No results found"
         showNotification(
           paste("Loaded:", paste(parts, collapse = ", ")),
           type = "message", duration = 10)
@@ -1341,15 +1383,18 @@ echo "[DIAMOND] Done: $(date)"
         return()
       }
 
-      setProgress(0.8, detail = "Cross-referencing with Sage...")
+      # Determine which database search engine is loaded
+      db_engine <- values$dda_db_engine %||% "Sage"
+      setProgress(0.8, detail = paste0("Cross-referencing with ", db_engine, "..."))
 
       # Store raw Casanovo results
       values$dda_casanovo_psms <- casanovo_psms
 
-      # Cross-reference with Sage if available
+      # Cross-reference with database search if available
       if (!is.null(values$dda_sage_psms)) {
         classification <- tryCatch(
-          classify_dda_denovo(casanovo_psms, values$dda_sage_psms),
+          classify_dda_denovo(casanovo_psms, values$dda_sage_psms,
+            db_engine = db_engine),
           error = function(e) {
             message("[DDA] Classification error: ", e$message)
             NULL
@@ -1359,7 +1404,8 @@ echo "[DIAMOND] Done: $(date)"
         if (!is.null(classification)) {
           values$dda_casanovo_classification <- classification
           message(sprintf(
-            "[DDA] Casanovo classification: %d confirmed, %d novel",
+            "[DDA] Casanovo classification (vs %s): %d confirmed, %d novel",
+            db_engine,
             classification$summary_stats$n_confirmed,
             classification$summary_stats$n_novel
           ))
@@ -1497,6 +1543,7 @@ echo "[DIAMOND] Done: $(date)"
       values$dda_sage_psms    <- parsed$psms
       values$dda_lfq_wide     <- parsed$lfq_wide
       values$dda_protein_meta <- parsed$protein_meta
+      values$dda_db_engine    <- "Sage"
 
       # Parse report JSON if available
       for (rpt in c("results.json", "sage_report.json")) {
@@ -1825,11 +1872,18 @@ echo "[DIAMOND] Done: $(date)"
       "done" = {
         cls <- values$dda_casanovo_classification
         n_psms <- if (!is.null(values$dda_casanovo_psms)) nrow(values$dda_casanovo_psms) else 0
+        db_eng <- cls$db_engine %||% values$dda_db_engine %||% "Sage"
+        db_badge_color <- if (db_eng == "DIA-NN") "#e74c3c" else "#2980b9"
         div(
           class = "alert alert-success",
           style = "margin-top: 8px; border-left: 4px solid #6f42c1;",
           icon("wand-magic-sparkles"),
           paste(" Casanovo complete!", format(n_psms, big.mark = ","), "de novo sequences"),
+          tags$span(
+            style = paste0("margin-left: 6px; padding: 2px 6px; border-radius: 3px; ",
+              "font-size: 11px; color: white; background-color: ", db_badge_color, ";"),
+            paste("vs", db_eng)
+          ),
           if (!is.null(cls)) {
             tags$div(
               style = "margin-top: 4px; font-size: 12px;",
@@ -1945,6 +1999,8 @@ echo "[DIAMOND] Done: $(date)"
 
   # Helper: ensure species + category + contaminant_type columns exist on blast data
   blast_with_species <- reactive({
+    # Depend on session trigger to force re-evaluation after session restore
+    values$denovo_session_trigger
     blast_data <- values$denovo_blast %||% values$dda_casanovo_blast
     req(blast_data)
     blast <- blast_data
@@ -3449,5 +3505,12 @@ echo "[DIAMOND] Done: $(date)"
       )
     ))
   })
+
+  # ==========================================================================
+  #  Force key outputs to evaluate even when De Novo tab is hidden.
+  #  Required for session restore — values are set before tab becomes visible.
+  # ==========================================================================
+  outputOptions(output, "dda_blast_summary_cards",   suspendWhenHidden = FALSE)
+  outputOptions(output, "dda_blast_diagnostic_card", suspendWhenHidden = FALSE)
 
 }
