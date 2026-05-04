@@ -1,0 +1,60 @@
+name: Weekly Download Stats
+
+# Runs scripts/download_stats.sh once a week and commits the JSON snapshot.
+# Builds an append-only history at stats/download_stats_history.jsonl plus
+# a single "current state" file at stats/download_stats_latest.json.
+
+on:
+  schedule:
+    # Mondays at 08:00 UTC (00:00 PST / 01:00 PDT)
+    - cron: '0 8 * * 1'
+  workflow_dispatch:   # also allow manual trigger from the Actions tab
+
+jobs:
+  weekly-stats:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run download_stats.sh
+        env:
+          # Same PAT used by track-stats.yml — needs traffic API scope.
+          GH_TOKEN: ${{ secrets.STATS_TOKEN }}
+        run: |
+          set -e
+          mkdir -p stats
+
+          # JSON snapshot — full payload from the helper script.
+          bash scripts/download_stats.sh --json > stats/download_stats_latest.json
+
+          # Append a single-line summary to the history log (one record per week).
+          jq -c '{
+            date: (now | strftime("%Y-%m-%d")),
+            stars:        .github.stars,
+            forks:        .github.forks,
+            clones_14d_uniq: .github.traffic_14d.clones_unique,
+            views_14d_uniq:  .github.traffic_14d.views_unique,
+            release_dl:   .github.release_downloads_all_time,
+            hf_likes:     .huggingface.likes,
+            docker_pulls: .docker.pull_count
+          }' stats/download_stats_latest.json >> stats/download_stats_history.jsonl
+
+      - name: Commit and push if changed
+        run: |
+          git add stats/download_stats_latest.json stats/download_stats_history.jsonl
+          if git diff --cached --quiet; then
+            echo "No stats changes to commit."
+            exit 0
+          fi
+          DATE=$(date -I)
+          git commit -m "📈 Weekly download stats ${DATE}"
+          git push
