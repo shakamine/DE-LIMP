@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-05-04 22:52:07",
+  "github": {
+    "repo": null,
+    "stars": 7,
+    "forks": 0,
+    "open_issues": 1,
+    "traffic_14d": {
+      "clones": 1372,
+      "clones_unique": 384,
+      "views": 145,
+      "views_unique": 35
+    },
+    "release_downloads_all_time": 0,
+    "per_release": []
+  },
+  "huggingface": {
+    "space": null,
+    "likes": 0,
+    "last_modified": "2026-05-04T22:49:51.000Z"
+  },
+  "docker": {
+    "image": null,
+    "pull_count": 327,
+    "stars": 0
+  }
+}
