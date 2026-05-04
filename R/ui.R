@@ -273,6 +273,27 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
               title = "What are these filters?")),
           div(style = "font-size: 0.8em; color: #6c757d; margin: 4px 0 6px 0;",
               "Optional precursor pre-filter. Default 0 = off. Paper recommends 0.75."),
+          # Banner adapts to the pipeline_mode in Pipeline Settings.
+          conditionalPanel(
+            condition = "input.pipeline_mode != 'maxlfq'",
+            div(style = paste0("font-size: 0.78em; color: #b08600; ",
+                               "background: #fff7e6; border: 1px solid #ffd591; ",
+                               "border-radius: 4px; padding: 6px 8px; margin-bottom: 6px;"),
+              icon("info-circle"),
+              " These filters are designed for the ", tags$b("MaxLFQ + limma"),
+              " pipeline (Moschem 2025). With ", tags$b("DPC-Quant"),
+              " they're forced to 0 — pre-filtering biases its missing-data model. ",
+              "Switch the Quantification method in Pipeline Settings to enable.")
+          ),
+          conditionalPanel(
+            condition = "input.pipeline_mode == 'maxlfq'",
+            div(style = paste0("font-size: 0.78em; color: #155724; ",
+                               "background: #e8f5e8; border: 1px solid #c3e6cb; ",
+                               "border-radius: 4px; padding: 6px 8px; margin-bottom: 6px;"),
+              icon("check-circle"),
+              " Active under ", tags$b("MaxLFQ + limma"),
+              ". Paper-recommended starting points: eQ ≥ 0.75, pgQ ≥ 0.75.")
+          ),
           numericInput("eq_cutoff",  "Empirical Quality (eQ) ≥",
                        value = 0, min = 0, max = 1, step = 0.05),
           numericInput("pgq_cutoff", "PG.MaxLFQ Quality (pgQ) ≥",
@@ -281,7 +302,30 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
       ),
 
       accordion_panel("Pipeline Settings", icon = icon("sliders"),
-        sliderInput("logfc_cutoff", "Min Log2 Fold Change:", min=0, max=5, value=0.6, step=0.1)
+        sliderInput("logfc_cutoff", "Min Log2 Fold Change:", min=0, max=5, value=0.6, step=0.1),
+        # Quantification method radio (v3.9+) — choose between limpa's DPC-Quant
+        # (probabilistic missing-data model) and the Moschem 2025 paper's
+        # MaxLFQ + limma pipeline. The pipelines have different missingness
+        # philosophies, so the QuantUMS sidebar pre-filters are only meaningful
+        # under MaxLFQ + limma.
+        radioButtons("pipeline_mode", "Quantification method:",
+          choices = c(
+            "DPC-Quant (limpa, default)" = "dpc",
+            "MaxLFQ + limma (Moschem 2025)" = "maxlfq"
+          ),
+          selected = "dpc"),
+        # Experimental override — only visible when MaxLFQ chosen.
+        conditionalPanel(
+          condition = "input.pipeline_mode == 'maxlfq'",
+          checkboxInput("use_limpa_with_filter",
+            "Run filtered precursors through limpa anyway (experimental)",
+            value = FALSE),
+          div(style = "font-size: 0.78em; color: #b08600; margin: -6px 0 8px 22px; line-height: 1.3;",
+              icon("triangle-exclamation"),
+              " This combination isn't tested in either paper. ",
+              "DPC-Quant assumes you didn't pre-filter; QuantUMS filtering biases its detection model. ",
+              "Use only to compare methods.")
+        )
       ),
 
       accordion_panel("AI Chat", icon = icon("robot"),
@@ -1726,6 +1770,35 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                           )
                         ),
                         plotOutput("cv_histogram", height = "450px")
+                      )
+                    )
+                  ),
+
+                  nav_panel("On/Off Proteins", icon = icon("toggle-on"),
+                    div(style = "overflow-y: auto; max-height: calc(100vh - 200px); padding: 5px 5px 20px 5px;",
+                      div(style = paste0("background: #f0f7ff; border: 1px solid #b6daff; ",
+                                          "border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; ",
+                                          "font-size: 0.9em; line-height: 1.5;"),
+                        icon("info-circle"),
+                        " Proteins detected in one group AND completely missing from the other have ",
+                        em("no finite logFC"),
+                        " — limma silently drops them from the volcano. They're listed here as ",
+                        strong("presence/absence calls"),
+                        ". Most relevant under the ", strong("MaxLFQ + limma"),
+                        " pipeline (DPC-Quant fills missing values, so this list will normally be empty there)."
+                      ),
+                      div(style = "display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px;",
+                        div(style = "min-width: 220px;",
+                          numericInput("onoff_min_n",
+                            "Detected in ≥ N samples of one group:",
+                            value = 2, min = 1, max = 20, step = 1)
+                        ),
+                        downloadButton("download_onoff_csv",
+                          tagList(icon("download"), " CSV"),
+                          class = "btn-outline-secondary btn-sm")
+                      ),
+                      div(style = "min-height: 400px;",
+                        DTOutput("onoff_table")
                       )
                     )
                   )

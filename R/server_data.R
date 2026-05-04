@@ -593,22 +593,66 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
         message(sprintf("[DE-LIMP] Pipeline start — %d samples, memory: %.0f MB",
                         ncol(dat$E), sum(gc(verbose = FALSE)[,2])))
 
-        incProgress(0.2, detail = "Normalizing (DPC-CN)...")
-        dpcfit <- limpa::dpcCN(dat)
-        values$dpc_fit <- dpcfit
-        gc(verbose = FALSE)
+        # v3.9 — choose between DPC-Quant (limpa) and MaxLFQ + limma (Moschem 2025)
+        pipeline_mode <- input$pipeline_mode %||% "dpc"
+        use_limpa_override <- isTRUE(input$use_limpa_with_filter)
+        use_maxlfq <- (pipeline_mode == "maxlfq") && !use_limpa_override
 
-        incProgress(0.5, detail = "Protein quantification (DPC-Quant)...")
-        values$y_protein <- tryCatch({
-          result <- limpa::dpcQuant(dat, "Protein.Group", dpc=dpcfit)
+        if (use_maxlfq) {
+          # ---- Paper-faithful MaxLFQ + limma branch ----
+          incProgress(0.5, detail = "Building MaxLFQ matrix (paper-faithful)...")
+          parquet_path <- values$uploaded_report_path
+          if (is.null(parquet_path) || !file.exists(parquet_path)) {
+            showNotification("MaxLFQ pipeline needs the loaded report.parquet on disk. Reload the file and try again.",
+                             type = "error", duration = NULL)
+            return(invisible(NULL))
+          }
+          values$y_protein <- tryCatch({
+            res <- build_maxlfq_pipeline(parquet_path,
+                     q_cutoff   = input$q_cutoff   %||% 0.01,
+                     eq_cutoff  = input$eq_cutoff  %||% 0,
+                     pgq_cutoff = input$pgq_cutoff %||% 0)
+            gc(verbose = FALSE)
+            message(sprintf("[DE-LIMP] MaxLFQ pipeline: %d proteins x %d runs, %d cells missing (%.1f%%). Filters: %s",
+                            res$other$n_proteins_in_matrix, res$other$n_runs,
+                            res$other$n_cells_missing,
+                            100 * res$other$n_cells_missing / res$other$n_cells_total,
+                            paste(res$other$filters_applied, collapse = "; ")))
+            res
+          }, error = function(e) {
+            showNotification(paste("MaxLFQ pipeline failed:", e$message),
+                             type = "error", duration = NULL)
+            return(NULL)
+          })
+          values$dpc_fit <- NULL
+          values$pipeline_mode_used <- "maxlfq"
+        } else {
+          # ---- DPC-Quant (limpa) branch ----
+          if (pipeline_mode == "maxlfq" && use_limpa_override) {
+            showNotification(
+              paste0("Experimental: running limpa DPC-Quant on QuantUMS-filtered precursors. ",
+                     "This combination is not tested in either paper — DPC-Quant assumes no pre-filtering."),
+              type = "warning", duration = 15)
+            message("[DE-LIMP] Running experimental combo: QuantUMS filter + limpa DPC-Quant.")
+          }
+          incProgress(0.2, detail = "Normalizing (DPC-CN)...")
+          dpcfit <- limpa::dpcCN(dat)
+          values$dpc_fit <- dpcfit
           gc(verbose = FALSE)
-          message(sprintf("[DE-LIMP] Quantification done — %d proteins, memory: %.0f MB",
-                          nrow(result$E), sum(gc(verbose = FALSE)[,2])))
-          result
-        }, error = function(e) {
-          showNotification(paste("Protein quantification failed:", e$message), type = "error", duration = NULL)
-          return(NULL)
-        })
+
+          incProgress(0.5, detail = "Protein quantification (DPC-Quant)...")
+          values$y_protein <- tryCatch({
+            result <- limpa::dpcQuant(dat, "Protein.Group", dpc=dpcfit)
+            gc(verbose = FALSE)
+            message(sprintf("[DE-LIMP] Quantification done — %d proteins, memory: %.0f MB",
+                            nrow(result$E), sum(gc(verbose = FALSE)[,2])))
+            result
+          }, error = function(e) {
+            showNotification(paste("Protein quantification failed:", e$message), type = "error", duration = NULL)
+            return(NULL)
+          })
+          values$pipeline_mode_used <- if (use_limpa_override) "dpc_with_filter_experimental" else "dpc"
+        }
 
         req(values$y_protein)
 
@@ -726,10 +770,41 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
                   group_sizes, collapse = ", "), ")")
         } else {
           tryCatch({
-            fit <- limpa::dpcDE(values$y_protein, design, plot=FALSE)
+            if (isTRUE(values$pipeline_mode_used == "maxlfq")) {
+              # Paper-faithful MaxLFQ + limma path. limma's per-row NA
+              # handling does the work: proteins fully missing in either
+              # contrast group end up with NA logFC and silently drop out
+              # of topTable — those are surfaced separately in the On/Off
+              # Proteins panel below.
+              message("[DE-LIMP] Running plain limma::lmFit on MaxLFQ matrix (paper-faithful, no DPC-Quant).")
+              fit <- limma::lmFit(values$y_protein$E, design)
+            } else {
+              fit <- limpa::dpcDE(values$y_protein, design, plot=FALSE)
+            }
             fit <- contrasts.fit(fit, makeContrasts(contrasts=forms, levels=design))
             fit <- eBayes(fit)
             values$fit <- fit
+
+            # On/Off proteins (only meaningful when matrix has missing values,
+            # i.e. when the MaxLFQ pipeline is in use).
+            values$onoff_proteins <- tryCatch({
+              if (any(is.na(values$y_protein$E))) {
+                gene_lookup <- if (!is.null(values$y_protein$genes$Genes)) {
+                  setNames(values$y_protein$genes$Genes,
+                           values$y_protein$genes$Protein.Group)
+                } else NULL
+                contrasts_list <- lapply(forms, function(f) {
+                  parts <- trimws(strsplit(f, "-", fixed = TRUE)[[1]])
+                  parts
+                })
+                compute_onoff_proteins(values$y_protein$E, groups,
+                                       contrasts_list = contrasts_list,
+                                       n_min = input$onoff_min_n %||% 2,
+                                       gene_lookup = gene_lookup)
+              } else NULL
+            }, error = function(e) {
+              message("[DE-LIMP] On/Off computation skipped: ", e$message); NULL
+            })
 
             # Clear stale GSEA cache from previous pipeline run
             values$gsea_results_cache <- list()

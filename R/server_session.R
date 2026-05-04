@@ -160,9 +160,16 @@ server_session <- function(input, output, session, values, add_to_log) {
         tags$h6("When this is most useful"),
         p("Comparing logFC across instruments / acquisition modes (different isolation windows, Astral vs Exploris vs timsTOF), ",
           "or any time you suspect a small set of low-quality precursors is dragging the protein-level estimate."),
-        tags$h6("Caveat"),
-        p("The pgQ score is computed by DIA-NN's MaxLFQ algorithm. DE-LIMP uses ", strong("DPC-Quant"),
-          " (limpa) for protein roll-up, not MaxLFQ. Filtering precursors by their parent PG's pgQ score still works as a feature-selection signal, but it is not strictly the same as the paper's MaxLFQ-based downstream.")
+        tags$h6("How v3.9+ wires this to the pipeline"),
+        p("Pipeline Settings has a ", strong("Quantification method"), " radio with three resulting paths:"),
+        tags$ul(
+          tags$li(strong("DPC-Quant (default)"), " — limpa's missing-data model. QuantUMS filters are forced to 0 internally regardless of slider position; the paper's filters bias DPC-Quant's detection curve, so combining them is suppressed."),
+          tags$li(strong("MaxLFQ + limma"), " — paper-faithful Moschem 2025. QuantUMS filters apply, the parquet is pivoted to PG.MaxLFQ, log2 + median-normalised, then run through plain ", code("limma::lmFit"), " with NA values left in place. Proteins fully missing in one condition end up with NA logFC and silently drop from the volcano — they're surfaced in the new ", strong("On/Off Proteins"), " sub-tab of the DE Dashboard."),
+          tags$li(strong("MaxLFQ + limma + “Run filtered precursors through limpa anyway” checkbox"), " — experimental. Runs DPC-Quant on the QuantUMS-filtered parquet. Neither paper tested this combination; results may differ unpredictably. Useful only for direct method comparison.")
+        ),
+        tags$h6("On/Off proteins"),
+        p("Under MaxLFQ + limma, proteins detected in one group AND completely missing from the other have no finite logFC. They appear in the dedicated ",
+          strong("On/Off Proteins"), " sub-tab as presence/absence calls (no p-value applies). Adjust the “Detected in ≥ N samples” threshold to control sensitivity.")
       )
     ))
   })

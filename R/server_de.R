@@ -808,4 +808,59 @@ server_de <- function(input, output, session, values, add_to_log) {
     }
   )
 
+  # On/Off proteins — recompute live from y_protein + metadata$Group so the
+  # min-N slider works without re-running the whole pipeline.
+  onoff_data <- reactive({
+    req(values$y_protein, values$metadata)
+    if (!any(is.na(values$y_protein$E))) return(NULL)
+    grp <- values$metadata$Group
+    grp[is.na(grp) | !nzchar(grp)] <- NA
+    if (length(unique(stats::na.omit(grp))) < 2) return(NULL)
+    gene_lookup <- if (!is.null(values$y_protein$genes$Genes)) {
+      stats::setNames(values$y_protein$genes$Genes,
+                      values$y_protein$genes$Protein.Group)
+    } else NULL
+    compute_onoff_proteins(values$y_protein$E,
+                           group_factor = grp,
+                           n_min = input$onoff_min_n %||% 2,
+                           gene_lookup = gene_lookup)
+  })
+
+  output$onoff_table <- DT::renderDT({
+    df <- onoff_data()
+    if (is.null(df) || nrow(df) == 0) {
+      empty_msg <- if (!isTRUE(values$pipeline_mode_used == "maxlfq"))
+        "No on/off proteins under DPC-Quant — its missing-data model fills these in. Switch to MaxLFQ + limma to see qualitative on/off calls."
+      else
+        sprintf("No proteins detected in ≥ %d samples of one group AND zero in the other.",
+                input$onoff_min_n %||% 2)
+      return(DT::datatable(data.frame(Note = empty_msg),
+        options = list(dom = "t", paging = FALSE, ordering = FALSE),
+        rownames = FALSE))
+    }
+    cols <- c("Protein.Group", if ("Gene" %in% names(df)) "Gene",
+              "Contrast", "Direction", "n_in_group1", "total_in_group1",
+              "n_in_group2", "total_in_group2")
+    cols <- intersect(cols, names(df))
+    DT::datatable(df[, cols, drop = FALSE],
+      filter = "top",
+      options = list(pageLength = 25, scrollX = TRUE, dom = "lfrtip"),
+      rownames = FALSE,
+      caption = htmltools::tags$caption(style = "caption-side: top; font-size: 0.85em; color: #6c757d;",
+        sprintf("%d on/off call(s) at min N = %d.", nrow(df), input$onoff_min_n %||% 2))
+    )
+  })
+
+  output$download_onoff_csv <- downloadHandler(
+    filename = function() paste0("onoff_proteins_", format(Sys.time(), "%Y%m%d_%H%M"), ".csv"),
+    content = function(file) {
+      df <- onoff_data()
+      if (is.null(df) || nrow(df) == 0) {
+        write.csv(data.frame(Status = "No on/off proteins"), file, row.names = FALSE)
+        return()
+      }
+      write.csv(df, file, row.names = FALSE)
+    }
+  )
+
 }

@@ -5,6 +5,19 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.0] — 2026-05-04
+
+### Added
+- **MaxLFQ + limma pipeline** (paper-faithful Moschem et al. 2025). New radio in **Pipeline Settings → Quantification method**: `DPC-Quant (limpa, default)` vs `MaxLFQ + limma (Moschem 2025)`. When MaxLFQ is selected, DE-LIMP **bypasses limpa entirely**: reads the parquet via Arrow, applies the Q.Value + QuantUMS filters, pivots to `Protein.Group × Run` using DIA-NN's already-computed `PG.MaxLFQ`, log2-transforms, median-normalises, and runs plain `limma::lmFit` with NAs left in place per the paper. New helper `build_maxlfq_pipeline()` in `R/helpers.R`.
+- **On/Off Proteins sub-tab** in the DE Dashboard. Surfaces proteins detected in ≥ N samples of one group AND zero in the other — these get NA logFC under limma and silently drop from the volcano. Slider for the N threshold (default 2), DT table with filter / sort / CSV download, helpful empty-state message under DPC-Quant ("its missing-data model fills these in"). New helper `compute_onoff_proteins()` in `R/helpers.R`.
+- **Experimental escape hatch**: when MaxLFQ + limma is selected, a checkbox **"Run filtered precursors through limpa anyway (experimental)"** lets users force DPC-Quant on the QuantUMS-filtered parquet. Yellow warning banner appears on the run because neither paper tested this combination. Default unchecked.
+- **Pipeline-aware QuantUMS panel banner**: a dynamic note inside the QuantUMS-filters details block tells the user whether the sliders actually do anything based on the active pipeline mode (greyed-out warning under DPC-Quant, green confirmation under MaxLFQ + limma).
+- **Methodology disclosure**: when MaxLFQ pipeline runs, the console prints `[DE-LIMP] MaxLFQ pipeline: N proteins x M runs, X cells missing (P%). Filters: ...` for full reproducibility.
+
+### Changed
+- **QuantUMS info modal** rewritten for v3.9 — explains the three resulting paths (DPC-Quant / MaxLFQ + limma / experimental combo), and points users at the new On/Off Proteins panel for proteins lost to all-missing-in-one-condition behaviour.
+- **Methodological note in the modal**: DPC-Quant's design assumption (use low-quality precursors via probability modelling) is incompatible with pre-filtering, so under DPC-Quant the QuantUMS filters are forced to 0 internally regardless of slider value. Switching pipelines is the user-facing way to enable filtering.
+
 ## [3.8.5] — 2026-05-04
 
 ### Fixed

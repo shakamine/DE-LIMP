@@ -151,6 +151,205 @@ filter_quantums_parquet <- function(parquet_path, eq_cutoff = 0, pgq_cutoff = 0)
   list(path = out_path, n_in = n_in, n_out = n_out, applied = applied)
 }
 
+# --- MaxLFQ + limma pipeline (paper-faithful Moschem 2025) -----------------
+#
+# Read a DIA-NN report.parquet, apply the same Q-value + QuantUMS filters
+# the user specified, and produce a Protein.Group x Run matrix from
+# DIA-NN's already-computed PG.MaxLFQ values. NAs are preserved (not
+# imputed) so limma's per-row NA handling can do its thing — that matches
+# the paper's pipeline.
+#
+# Returns an EList-shaped list compatible with downstream DE-LIMP code:
+#   $E       — log2(MaxLFQ) matrix, proteins x samples, NAs preserved
+#   $genes   — data.frame(Protein.Group, Genes, Protein.Names)
+#   $targets — data.frame(File.Name) — sample sheet placeholder
+#   $other$n.observations — 1 / 0 matrix marking detection in each cell
+#   $other$pipeline — "maxlfq"  (used by downstream code to branch)
+#   $other$filters_applied — character vector of filters used (for Methods)
+build_maxlfq_pipeline <- function(parquet_path, q_cutoff = 0.01,
+                                   eq_cutoff = 0, pgq_cutoff = 0) {
+  if (!requireNamespace("arrow", quietly = TRUE))
+    stop("arrow package required for the MaxLFQ pipeline.")
+
+  ds <- arrow::open_dataset(parquet_path, format = "parquet")
+  cols <- names(ds$schema)
+
+  needed <- c("Run", "Protein.Group", "PG.MaxLFQ",
+              "Q.Value", "Lib.Q.Value", "Lib.PG.Q.Value")
+  optional <- c("Empirical.Quality", "PG.MaxLFQ.Quality",
+                "Genes", "Protein.Names")
+  missing_needed <- setdiff(needed, cols)
+  if (length(missing_needed) > 0)
+    stop("MaxLFQ pipeline: missing required columns in parquet: ",
+         paste(missing_needed, collapse = ", "))
+
+  select_cols <- c(needed, intersect(optional, cols))
+  flt <- ds %>% dplyr::select(dplyr::all_of(select_cols))
+
+  filters_applied <- character(0)
+
+  # Identification FDR (matches paper's Methods, page 3861)
+  if (!is.null(q_cutoff) && !is.na(q_cutoff) && q_cutoff > 0) {
+    flt <- flt %>%
+      dplyr::filter(Q.Value <= !!q_cutoff,
+                    Lib.Q.Value <= !!q_cutoff,
+                    Lib.PG.Q.Value <= !!q_cutoff)
+    filters_applied <- c(filters_applied,
+      sprintf("Q.Value, Lib.Q.Value, Lib.PG.Q.Value <= %.3f", q_cutoff))
+  }
+  # QuantUMS — eQ
+  if (!is.null(eq_cutoff) && !is.na(eq_cutoff) && eq_cutoff > 0 &&
+      "Empirical.Quality" %in% cols) {
+    flt <- flt %>% dplyr::filter(Empirical.Quality >= !!eq_cutoff)
+    filters_applied <- c(filters_applied,
+      sprintf("Empirical.Quality >= %.2f", eq_cutoff))
+  }
+  # QuantUMS — pgQ
+  if (!is.null(pgq_cutoff) && !is.na(pgq_cutoff) && pgq_cutoff > 0 &&
+      "PG.MaxLFQ.Quality" %in% cols) {
+    flt <- flt %>% dplyr::filter(PG.MaxLFQ.Quality >= !!pgq_cutoff)
+    filters_applied <- c(filters_applied,
+      sprintf("PG.MaxLFQ.Quality >= %.2f", pgq_cutoff))
+  }
+
+  rows <- flt %>% dplyr::collect()
+  if (nrow(rows) == 0)
+    stop("MaxLFQ pipeline: no precursor rows survived the filters. ",
+         "Loosen the QuantUMS cutoffs and try again.")
+
+  # One PG.MaxLFQ value per (Protein.Group, Run). Take max in case multiple
+  # precursor rows duplicate the protein-group MaxLFQ value (DIA-NN does
+  # broadcast it across rows of a PG within a run).
+  pg_run <- rows %>%
+    dplyr::group_by(Protein.Group, Run) %>%
+    dplyr::summarise(PG.MaxLFQ = max(PG.MaxLFQ, na.rm = TRUE),
+                     .groups = "drop") %>%
+    dplyr::mutate(PG.MaxLFQ = ifelse(is.finite(PG.MaxLFQ), PG.MaxLFQ, NA_real_))
+
+  # Pivot wide: rows = proteins, cols = runs
+  wide <- pg_run %>%
+    tidyr::pivot_wider(id_cols = Protein.Group,
+                       names_from = Run, values_from = PG.MaxLFQ)
+  prot_ids <- wide$Protein.Group
+  E <- as.matrix(wide[, -1, drop = FALSE])
+  rownames(E) <- prot_ids
+
+  # log2 transform (NaN/Inf -> NA)
+  E[E <= 0 | !is.finite(E)] <- NA_real_
+  E <- log2(E)
+
+  # Median-normalize across samples (per-run intensity centering)
+  col_med <- apply(E, 2, function(x) stats::median(x, na.rm = TRUE))
+  global_med <- stats::median(col_med, na.rm = TRUE)
+  E <- sweep(E, 2, col_med - global_med, FUN = "-")
+
+  # Detection (1 if not NA, 0 otherwise) — used by downstream nObs logic
+  n_obs <- ifelse(is.na(E), 0L, 1L)
+
+  # Best-effort gene annotation per Protein.Group: take the most common Genes /
+  # Protein.Names string per PG (in case multiple precursor rows disagree).
+  ann_cols <- intersect(c("Genes", "Protein.Names"), names(rows))
+  ann <- if (length(ann_cols) > 0) {
+    rows %>%
+      dplyr::group_by(Protein.Group) %>%
+      dplyr::summarise(dplyr::across(dplyr::all_of(ann_cols),
+                                     ~ names(sort(table(.x), decreasing = TRUE))[1] %||% NA_character_),
+                       .groups = "drop")
+  } else {
+    data.frame(Protein.Group = unique(rows$Protein.Group), stringsAsFactors = FALSE)
+  }
+  genes <- merge(data.frame(Protein.Group = prot_ids, stringsAsFactors = FALSE),
+                 ann, by = "Protein.Group", all.x = TRUE, sort = FALSE)
+  rownames(genes) <- genes$Protein.Group
+
+  list(
+    E = E,
+    genes = genes,
+    targets = data.frame(File.Name = colnames(E), stringsAsFactors = FALSE),
+    other = list(
+      n.observations = n_obs,
+      pipeline = "maxlfq",
+      filters_applied = filters_applied,
+      n_proteins_in_matrix = nrow(E),
+      n_runs = ncol(E),
+      n_cells_total = length(E),
+      n_cells_missing = sum(is.na(E))
+    )
+  )
+}
+
+# --- Compute "On/Off" proteins per contrast --------------------------------
+#
+# Surface proteins detected in ≥ n_min samples of one condition AND in 0
+# samples of the other — these get NA logFC from limma so they're invisible
+# in the volcano. Returns a data.frame: Protein.Group, Gene, Contrast,
+# Direction (one of "Group1_only" / "Group2_only"), n_in_group1, n_in_group2,
+# total_in_group1, total_in_group2.
+compute_onoff_proteins <- function(E, group_factor, contrasts_list = NULL,
+                                    n_min = 2, gene_lookup = NULL) {
+  stopifnot(ncol(E) == length(group_factor))
+  groups <- as.character(group_factor)
+  unique_groups <- unique(groups[!is.na(groups) & nzchar(groups)])
+
+  # If no contrasts given, generate all pairs
+  if (is.null(contrasts_list) || length(contrasts_list) == 0) {
+    if (length(unique_groups) < 2) return(NULL)
+    pairs <- utils::combn(unique_groups, 2, simplify = FALSE)
+    contrasts_list <- lapply(pairs, function(p) c(p[2], p[1]))
+  }
+
+  # Detection per cell
+  detected <- !is.na(E)
+
+  out <- list()
+  for (con in contrasts_list) {
+    g1 <- con[1]; g2 <- con[2]
+    cols_g1 <- which(groups == g1)
+    cols_g2 <- which(groups == g2)
+    if (length(cols_g1) == 0 || length(cols_g2) == 0) next
+
+    n1 <- rowSums(detected[, cols_g1, drop = FALSE])
+    n2 <- rowSums(detected[, cols_g2, drop = FALSE])
+
+    g1_only <- (n1 >= n_min) & (n2 == 0)
+    g2_only <- (n2 >= n_min) & (n1 == 0)
+
+    if (sum(g1_only) > 0) {
+      df <- data.frame(
+        Protein.Group = rownames(E)[g1_only],
+        Contrast = paste0(g1, " - ", g2),
+        Direction = paste0(g1, "_only"),
+        n_in_group1 = n1[g1_only],
+        n_in_group2 = n2[g1_only],
+        total_in_group1 = length(cols_g1),
+        total_in_group2 = length(cols_g2),
+        stringsAsFactors = FALSE
+      )
+      out[[length(out) + 1]] <- df
+    }
+    if (sum(g2_only) > 0) {
+      df <- data.frame(
+        Protein.Group = rownames(E)[g2_only],
+        Contrast = paste0(g1, " - ", g2),
+        Direction = paste0(g2, "_only"),
+        n_in_group1 = n1[g2_only],
+        n_in_group2 = n2[g2_only],
+        total_in_group1 = length(cols_g1),
+        total_in_group2 = length(cols_g2),
+        stringsAsFactors = FALSE
+      )
+      out[[length(out) + 1]] <- df
+    }
+  }
+  if (length(out) == 0) return(NULL)
+  result <- do.call(rbind, out)
+  if (!is.null(gene_lookup)) {
+    result$Gene <- gene_lookup[result$Protein.Group]
+  }
+  rownames(result) <- NULL
+  result
+}
+
 # --- QC Stats Calculation ---
 # Memory-optimized: reads only needed columns via Arrow col_select,
 # then aggregates before collecting into R memory.
