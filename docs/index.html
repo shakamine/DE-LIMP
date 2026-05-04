@@ -467,7 +467,7 @@
         <div class="container">
             <p class="subtitle">UC Davis Proteomics Core Facility</p>
             <h1>DE-LIMP</h1>
-            <span class="version-badge">v3.7</span>
+            <span class="version-badge">v3.8</span>
             <p class="tagline">
                 Upload your DIA-NN proteomics data and instantly identify differentially expressed proteins with interactive volcano plots, pathway enrichment, and AI-powered interpretation. Supports phosphoproteomics, multi-omics integration, and core facility management.
             </p>
@@ -619,6 +619,26 @@
             <h2>Key Features</h2>
             <p class="section-sub">A complete proteomics analysis platform &mdash; from raw data search to multi-omics integration and core facility management.</p>
             <div class="features">
+                <div class="feature-card">
+                    <div class="feat-icon">&#x1F50D;</div>
+                    <h3>QuantUMS Quality Filter <span class="new-badge">v3.8</span></h3>
+                    <p>Optional precursor pre-filter on DIA-NN's QuantUMS quality scores (Empirical.Quality, PG.MaxLFQ.Quality) before protein roll-up. Implements the recommendations of <a href="https://doi.org/10.1021/acs.jproteome.5c00009" target="_blank" rel="noopener">Moschem et al., J. Proteome Res. 2025, 24:3860</a>. Default 0 = off; the recommended cutoff of 0.75 removes low-quality precursors that drag the protein-level estimate, improving logFC reliability and cross-instrument comparability. Built-in <em>?</em> info modal cites the paper and the recommended thresholds.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feat-icon">&#x1F9EE;</div>
+                    <h3>Clearer Covariate UI <span class="new-badge">v3.8</span></h3>
+                    <p>Three uniform covariate slots in a 2-column grid: an explicit <strong>In model</strong> toggle (adds the factor to the limma design matrix) sits next to a <strong>Column name</strong> text box that just renames the header. Tooltips on every control plus a <em>?</em> info modal explaining batch-vs-biological covariates and the R/limma equivalent (<code>~ 0 + Group + Year</code>). Replaces the old single-row strip where the two roles were easy to confuse.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feat-icon">&#x1F3F7;&#xFE0F;</div>
+                    <h3>Always-Visible Version Badge <span class="new-badge">v3.8</span></h3>
+                    <p>A pill-shaped <code>vX.Y.Z</code> badge sits at the far right of the navbar on every screen — useful on Hugging Face, WSL, or Docker so users can confirm at a glance which release they're running. Clicking the badge opens the GitHub CHANGELOG. The R console also prints <code>DE-LIMP vX.Y.Z | R x.y.z | timestamp</code> at startup.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feat-icon">&#x1F527;</div>
+                    <h3>Robust Install on Fresh R <span class="new-badge">v3.8</span></h3>
+                    <p>Right after a major R release (e.g. R 4.6 paired with Bioconductor 3.23), <code>BiocManager</code>'s lookup table can lag a few weeks behind. v3.8 adds an explicit R↔Bioc map and a direct-Bioconductor-repo install fallback so limpa and the rest of the Bioconductor stack install cleanly without needing the user to update <code>BiocManager</code> by hand. Failure messages now name the actual root cause (R-too-old vs. BiocManager-stale vs. network) instead of a generic notice.</p>
+                </div>
                 <div class="feature-card">
                     <div class="feat-icon">&#x2696;&#xFE0F;</div>
                     <h3>Run Comparator <span class="new-badge">New</span></h3>
