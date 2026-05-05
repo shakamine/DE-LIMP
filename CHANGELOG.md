@@ -5,6 +5,15 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.9] — 2026-05-05
+
+### Fixed
+- **Stale unit tests now pass** (revealed when v3.9.8 fixed the testthat-install bug):
+  - `test-search_history.R`: path test now expects `activity_log.csv$` not `search_history.csv$` (the search history was unified into the activity log months ago; `search_history_path()` is just an alias for `activity_log_path()`).
+  - `test-resume_launcher.R`: dependency-chain test now matches the current `afterany` / `afterok` mix (steps 2→3 and 4→5 use `afterany` so a few OOM/timeout array tasks don't collapse the pipeline; step 3→4 stays `afterok`).
+- **Real bug in `update_search_status()` shim**: it accepted a `completed_at` argument but only set `event_type = "search_completed"` when non-NA — the timestamp itself was never written to the row. Now properly persists `completed_at` to the activity log row, matching what callers expect.
+- **Added `search_history_headers` back-compat alias** for `activity_log_headers` so legacy code/tests that reference the old name still resolve.
+
 ## [3.9.8] — 2026-05-05
 
 ### Fixed

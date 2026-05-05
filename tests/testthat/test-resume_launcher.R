@@ -125,13 +125,17 @@ test_that("generate_resume_launcher dependency chain is correct", {
   # Step 2 → JOB2, Step 3 depends on JOB2, Step 4 depends on JOB3, etc.
   lines <- strsplit(script, "\n")[[1]]
 
-  # Find submitted steps and verify chain
-  submit_lines <- grep("--dependency=afterok:", lines, value = TRUE)
+  # Find submitted steps and verify chain. Note: helpers_search.R now uses
+  # `afterany` (not `afterok`) for the 2→3 and 4→5 transitions so a few
+  # OOM/timeout tasks in step 2/4 (array jobs) don't collapse the pipeline —
+  # verify-blocks in steps 3 and 5 handle partial completion. The 3→4
+  # transition stays `afterok` because step 3 must finish cleanly.
+  submit_lines <- grep("--dependency=after(any|ok):", lines, value = TRUE)
   expect_length(submit_lines, 3)  # Steps 3, 4, 5 each depend on previous
 
-  expect_true(grepl("afterok:\\$JOB2_ID", submit_lines[1]))
-  expect_true(grepl("afterok:\\$JOB3_ID", submit_lines[2]))
-  expect_true(grepl("afterok:\\$JOB4_ID", submit_lines[3]))
+  expect_true(grepl("--dependency=afterany:\\$JOB2_ID", submit_lines[1]))
+  expect_true(grepl("--dependency=afterok:\\$JOB3_ID",  submit_lines[2]))
+  expect_true(grepl("--dependency=afterany:\\$JOB4_ID", submit_lines[3]))
 })
 
 test_that("generate_resume_launcher outputs STEP lines for all 5 steps", {

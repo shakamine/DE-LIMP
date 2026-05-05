@@ -4421,6 +4421,8 @@ backfill_activity_log <- function(jobs, path = activity_log_path(),
 # Legacy aliases — keep temporarily for any straggling references
 analysis_history_path <- activity_log_path
 search_history_path <- activity_log_path
+# Back-compat alias for code/tests that still reference the legacy headers vector
+search_history_headers <- activity_log_headers
 
 #' Count DE proteins across all contrasts
 #'
@@ -4449,7 +4451,10 @@ update_search_status <- function(output_dir, status, completed_at = NA,
                                   duration_min = NA,
                                   path = activity_log_path()) {
   updates <- list(status = status)
-  if (!is.na(completed_at)) updates$event_type <- "search_completed"
+  if (!is.na(completed_at)) {
+    updates$event_type <- "search_completed"
+    updates$completed_at <- completed_at  # actually persist the timestamp
+  }
   if (!is.na(duration_min)) updates$duration_min <- duration_min
   update_activity(output_dir, updates, event_type_filter = "search_submitted", path = path)
 }

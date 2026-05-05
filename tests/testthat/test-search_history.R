@@ -4,7 +4,10 @@ test_that("search_history_path returns a valid path", {
   path <- search_history_path()
   expect_true(is.character(path))
   expect_true(nzchar(path))
-  expect_true(grepl("search_history\\.csv$", path))
+  # search_history is now a back-compat alias for activity_log_path() —
+  # search history was unified into the activity log. Path should end in
+  # activity_log.csv.
+  expect_true(grepl("activity_log\\.csv$", path))
 })
 
 test_that("search_history_read returns empty data.frame for missing file", {
