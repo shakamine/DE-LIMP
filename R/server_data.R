@@ -23,11 +23,12 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
         values$qc_stats <- get_diann_stats_r(temp_file)
 
         incProgress(0.7, detail = "Reading Matrix...")
-        .qf <- filter_quantums_parquet(temp_file,
-                                       eq_cutoff  = input$eq_cutoff,
-                                       pgq_cutoff = input$pgq_cutoff)
-        values$raw_data <- limpa::readDIANN(.qf$path, format="parquet", q.cutoffs=input$q_cutoff)
-        values$quantums_filter_applied <- .qf$applied
+        # NOTE (v3.9.7): QuantUMS filtering moved to pipeline run-time inside
+        # build_maxlfq_pipeline(). Load handlers always read the unfiltered
+        # parquet so DPC-Quant gets paper-faithful input regardless of slider
+        # values. The filter sliders only take effect when MaxLFQ + limma runs.
+        values$raw_data <- limpa::readDIANN(temp_file, format="parquet", q.cutoffs=input$q_cutoff)
+        values$quantums_filter_applied <- character(0)
         fnames <- sort(colnames(values$raw_data$E))
         values$metadata <- data.frame(
           ID = 1:length(fnames),
@@ -113,11 +114,10 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
       incProgress(0.4, detail = "Reading expression matrix (this may take a while for large files)...")
       message(sprintf("[DE-LIMP] Memory before readDIANN: %.0f MB used", sum(gc()[,2])))
       tryCatch({
-        .qf <- filter_quantums_parquet(input$report_file$datapath,
-                                       eq_cutoff  = input$eq_cutoff,
-                                       pgq_cutoff = input$pgq_cutoff)
-        values$raw_data <- limpa::readDIANN(.qf$path, format="parquet", q.cutoffs=input$q_cutoff)
-        values$quantums_filter_applied <- .qf$applied
+        # NOTE (v3.9.7): QuantUMS filtering happens at pipeline run-time only
+        # (build_maxlfq_pipeline). Load always reads the unfiltered parquet.
+        values$raw_data <- limpa::readDIANN(input$report_file$datapath, format="parquet", q.cutoffs=input$q_cutoff)
+        values$quantums_filter_applied <- character(0)
         gc(verbose = FALSE)  # free readDIANN intermediates
         message(sprintf("[DE-LIMP] Memory after readDIANN: %.0f MB used", sum(gc()[,2])))
         fnames <- sort(colnames(values$raw_data$E))

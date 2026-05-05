@@ -1753,17 +1753,16 @@ server_search <- function(input, output, session, values, add_to_log,
         })
 
         incProgress(0.3, detail = "Reading expression matrix (this can take several minutes)...")
-        # QuantUMS pre-filter (Moschem et al. 2025) — opt-in via sidebar inputs
-        .qf <- filter_quantums_parquet(local_report,
-                                       eq_cutoff  = input$eq_cutoff,
-                                       pgq_cutoff = input$pgq_cutoff)
-        values$quantums_filter_applied <- .qf$applied
+        # NOTE (v3.9.7): QuantUMS pre-filtering moved to pipeline run-time inside
+        # build_maxlfq_pipeline(). Loading always reads the unfiltered parquet so
+        # DPC-Quant gets paper-faithful input regardless of slider values.
+        values$quantums_filter_applied <- character(0)
         phase_tick(sprintf("Reading expression matrix via limpa::readDIANN (file is %.0f MB; allow several minutes)",
                            file_mb))
         t0 <- Sys.time()
         tryCatch({
           raw_data <- suppressMessages(suppressWarnings(
-            limpa::readDIANN(.qf$path, format = "parquet", q.cutoffs = input$q_cutoff)))
+            limpa::readDIANN(local_report, format = "parquet", q.cutoffs = input$q_cutoff)))
           phase_done("limpa::readDIANN", t0)
 
           values$raw_data <- raw_data

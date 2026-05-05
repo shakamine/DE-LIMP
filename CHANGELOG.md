@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.7] — 2026-05-05
+
+### Fixed
+- **QuantUMS sliders were silently filtering DPC-Quant input**: v3.8.0 wired `filter_quantums_parquet()` into the load handlers (load example, load local file, Load from HPC). v3.9.x added pipeline branching but didn't undo this — so when a user loaded a parquet with the sliders set to 0.75 (e.g. from a prior MaxLFQ run), the QuantUMS filter ran at file-load time and limpa's DPC-Quant got pre-filtered input. Output was paper-faithful for MaxLFQ but biased for DPC-Quant. The console gave it away with `[QuantUMS filter] Empirical.Quality >= 0.75 — kept N / M precursors` showing up after a fresh load. All three load handlers now read the **unfiltered** parquet unconditionally; QuantUMS filtering happens only at pipeline run-time inside `build_maxlfq_pipeline()`. DPC-Quant always sees the full parquet regardless of slider position. Switching pipeline modes no longer needs a re-load.
+
 ## [3.9.6] — 2026-05-05
 
 ### Fixed
