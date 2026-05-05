@@ -617,11 +617,34 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
                      pgq_cutoff = input$pgq_cutoff %||% 0,
                      keep_runs  = keep_runs_maxlfq)
             gc(verbose = FALSE)
-            message(sprintf("[DE-LIMP] MaxLFQ pipeline: %d proteins x %d runs, %d cells missing (%.1f%%). Filters: %s",
+            # Per-filter precursor counts (visible feedback for the user)
+            fc <- res$other$filter_counts
+            if (!is.null(fc$input) && !is.na(fc$input)) {
+              message(sprintf("[DE-LIMP] MaxLFQ filters — input precursor rows: %s",
+                              format(fc$input, big.mark = ",")))
+              if (!is.null(fc$after_fdr))
+                message(sprintf("[DE-LIMP]   after FDR (Q ≤ %.3f): %s (%.1f%% kept)",
+                                input$q_cutoff %||% 0.01,
+                                format(fc$after_fdr, big.mark = ","),
+                                100 * fc$after_fdr / fc$input))
+              if (!is.null(fc$after_eq))
+                message(sprintf("[DE-LIMP]   after eQ ≥ %.2f: %s (%.1f%% kept of FDR pool)",
+                                input$eq_cutoff %||% 0,
+                                format(fc$after_eq, big.mark = ","),
+                                100 * fc$after_eq / max(fc$after_fdr %||% fc$input, 1)))
+              if (!is.null(fc$after_pgq))
+                message(sprintf("[DE-LIMP]   after pgQ ≥ %.2f: %s (%.1f%% kept of eQ pool)",
+                                input$pgq_cutoff %||% 0,
+                                format(fc$after_pgq, big.mark = ","),
+                                100 * fc$after_pgq / max(fc$after_eq %||% fc$after_fdr %||% fc$input, 1)))
+              if (!is.null(fc$after_excluded_files))
+                message(sprintf("[DE-LIMP]   after excluded-runs filter: %s",
+                                format(fc$after_excluded_files, big.mark = ",")))
+            }
+            message(sprintf("[DE-LIMP] MaxLFQ pipeline: %d proteins x %d runs, %d cells missing (%.1f%%).",
                             res$other$n_proteins_in_matrix, res$other$n_runs,
                             res$other$n_cells_missing,
-                            100 * res$other$n_cells_missing / res$other$n_cells_total,
-                            paste(res$other$filters_applied, collapse = "; ")))
+                            100 * res$other$n_cells_missing / res$other$n_cells_total))
             res
           }, error = function(e) {
             showNotification(paste("MaxLFQ pipeline failed:", e$message),

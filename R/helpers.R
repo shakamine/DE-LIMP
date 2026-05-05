@@ -188,6 +188,14 @@ build_maxlfq_pipeline <- function(parquet_path, q_cutoff = 0.01,
   flt <- ds %>% dplyr::select(dplyr::all_of(select_cols))
 
   filters_applied <- character(0)
+  filter_counts <- list()
+
+  count_rows <- function(plan) {
+    tryCatch(as.integer(plan %>% dplyr::summarise(n = dplyr::n()) %>%
+                          dplyr::collect() %>% .$n),
+             error = function(e) NA_integer_)
+  }
+  filter_counts$input <- count_rows(flt)
 
   # Identification FDR (matches paper's Methods, page 3861)
   if (!is.null(q_cutoff) && !is.na(q_cutoff) && q_cutoff > 0) {
@@ -197,6 +205,7 @@ build_maxlfq_pipeline <- function(parquet_path, q_cutoff = 0.01,
                     Lib.PG.Q.Value <= !!q_cutoff)
     filters_applied <- c(filters_applied,
       sprintf("Q.Value, Lib.Q.Value, Lib.PG.Q.Value <= %.3f", q_cutoff))
+    filter_counts$after_fdr <- count_rows(flt)
   }
   # QuantUMS — eQ
   if (!is.null(eq_cutoff) && !is.na(eq_cutoff) && eq_cutoff > 0 &&
@@ -204,6 +213,7 @@ build_maxlfq_pipeline <- function(parquet_path, q_cutoff = 0.01,
     flt <- flt %>% dplyr::filter(Empirical.Quality >= !!eq_cutoff)
     filters_applied <- c(filters_applied,
       sprintf("Empirical.Quality >= %.2f", eq_cutoff))
+    filter_counts$after_eq <- count_rows(flt)
   }
   # QuantUMS — pgQ
   if (!is.null(pgq_cutoff) && !is.na(pgq_cutoff) && pgq_cutoff > 0 &&
@@ -211,11 +221,13 @@ build_maxlfq_pipeline <- function(parquet_path, q_cutoff = 0.01,
     flt <- flt %>% dplyr::filter(PG.MaxLFQ.Quality >= !!pgq_cutoff)
     filters_applied <- c(filters_applied,
       sprintf("PG.MaxLFQ.Quality >= %.2f", pgq_cutoff))
+    filter_counts$after_pgq <- count_rows(flt)
   }
 
   # Restrict to the user's kept runs (excluded_files honoured) before pivot
   if (!is.null(keep_runs) && length(keep_runs) > 0) {
     flt <- flt %>% dplyr::filter(Run %in% !!keep_runs)
+    filter_counts$after_excluded_files <- count_rows(flt)
   }
 
   rows <- flt %>% dplyr::collect()
@@ -291,6 +303,8 @@ build_maxlfq_pipeline <- function(parquet_path, q_cutoff = 0.01,
       n_runs = ncol(E),
       n_cells_total = length(E),
       n_cells_missing = sum(is.na(E)),
+      # Per-filter precursor row counts so the UI can show "kept X / Y at eQ ≥ 0.75"
+      filter_counts = filter_counts,
       # Pre-normalization log2 matrix retained for Norm QC visualization
       E_log2_raw = E_pre
     )

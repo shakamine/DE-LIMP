@@ -1845,6 +1845,51 @@ server_qc <- function(input, output, session, values) {
     )
   })
 
+  # MaxLFQ filter waterfall — visible only when the MaxLFQ pipeline ran.
+  output$maxlfq_filter_summary <- renderUI({
+    if (!isTRUE(values$pipeline_mode_used == "maxlfq")) return(NULL)
+    fc <- values$y_protein$other$filter_counts
+    if (is.null(fc) || is.null(fc$input)) return(NULL)
+    fmt <- function(x) if (is.null(x) || is.na(x)) "—" else format(x, big.mark = ",")
+    pct_of <- function(num, denom) {
+      if (is.null(num) || is.na(num) || is.null(denom) || is.na(denom) || denom == 0) return("")
+      sprintf(" (%.1f%% kept)", 100 * num / denom)
+    }
+    rows <- list(
+      list(label = "Input precursor rows",                     val = fc$input,                              base = NULL),
+      list(label = sprintf("After FDR (Q-Value ≤ %.3f)",       input$q_cutoff %||% 0.01),
+           val = fc$after_fdr,                                 base = fc$input),
+      list(label = sprintf("After eQ ≥ %.2f",                  input$eq_cutoff  %||% 0),
+           val = fc$after_eq,                                  base = fc$after_fdr %||% fc$input),
+      list(label = sprintf("After pgQ ≥ %.2f",                 input$pgq_cutoff %||% 0),
+           val = fc$after_pgq,                                 base = fc$after_eq %||% fc$after_fdr %||% fc$input),
+      list(label = "After excluded-runs filter",
+           val = fc$after_excluded_files,                      base = fc$after_pgq %||% fc$after_eq %||% fc$after_fdr %||% fc$input)
+    )
+    rows <- Filter(function(r) !is.null(r$val), rows)
+    div(style = paste0("background: #fff7e6; border: 1px solid #ffd591; ",
+                       "border-radius: 6px; padding: 10px 14px; margin-bottom: 14px;"),
+      tags$h6(icon("filter"), " QuantUMS / FDR filter waterfall (MaxLFQ pipeline)",
+              style = "margin: 0 0 8px 0;"),
+      tags$table(class = "table table-sm", style = "margin: 0; font-size: 0.88em;",
+        tags$thead(tags$tr(
+          tags$th("Stage"), tags$th(style = "text-align: right;", "Precursor rows"),
+          tags$th(style = "text-align: right;", "Surviving"))),
+        tags$tbody(
+          lapply(rows, function(r) {
+            tags$tr(
+              tags$td(r$label),
+              tags$td(style = "text-align: right; font-variant-numeric: tabular-nums;",
+                      fmt(r$val)),
+              tags$td(style = "text-align: right; color: #6c757d; font-variant-numeric: tabular-nums;",
+                      pct_of(r$val, r$base))
+            )
+          })
+        )
+      )
+    )
+  })
+
   # Title flips between "Detected vs Inferred" (DPC-Quant — missing values are
   # filled in by the probability model) and "Detected vs Missing" (MaxLFQ —
   # missing means actually missing).

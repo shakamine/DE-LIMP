@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.4] — 2026-05-05
+
+### Added
+- **QuantUMS / FDR filter waterfall** in the **Data Completeness** sub-tab when the MaxLFQ pipeline ran. Compact table showing precursor row counts at every filter stage: `Input → after FDR → after eQ → after pgQ → after excluded-runs`, with a "% kept" column at each step. So users can see exactly how aggressive their filters are. The same waterfall is now logged to the R console (one line per stage with absolute counts and percentages of the prior pool). Helper `build_maxlfq_pipeline()` materialises per-filter row counts via lazy Arrow `summarise(n=n())` scans (cheap, doesn't collect the whole filtered dataset).
+
 ## [3.9.3] — 2026-05-05
 
 ### Fixed

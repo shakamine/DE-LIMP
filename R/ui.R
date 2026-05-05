@@ -1104,6 +1104,9 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                   div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
                     # Warning banner (conditional)
                     uiOutput("completeness_warning_banner"),
+                    # MaxLFQ pipeline: precursor filter waterfall (visible only
+                    # when MaxLFQ + limma ran).
+                    uiOutput("maxlfq_filter_summary"),
                     # Summary cards
                     uiOutput("completeness_summary_cards"),
                     # Info button row
