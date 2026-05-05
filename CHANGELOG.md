@@ -5,6 +5,15 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.3] — 2026-05-05
+
+### Fixed
+- **Heatmap crashed under MaxLFQ with `NA/NaN/Inf in foreign function call`**: `hclust()` doesn't tolerate NaN, but the MaxLFQ Z-score matrix (per-row centring of a matrix with NAs) produces NaN for rows that have any missing value. Now drops rows with `< 2` non-NA Z-scores and zero-fills the rest before passing to `Heatmap()` (clustering only — values are still NA in the source matrix). Applied across all four heatmap render/export sites in `R/server_de.R`.
+- **On/Off Proteins table threw a Shiny renderWidget error** when results were present: stripped suspect attrs/options from the DT call (dropped `filter = "top"`, dropped `htmltools::tags$caption()` wrapper in favour of a plain string caption, force-cast every column to a simple atomic vector before passing to `DT::datatable`).
+
+### Changed
+- **Stacked-bar title in Data Completeness flips per pipeline**: under DPC-Quant the bar still says "Detected vs Inferred Proteins per Sample" (missing values are filled in by the probability model). Under MaxLFQ + limma the bar now says "Detected vs Missing Proteins per Sample" — those cells are genuinely missing, not imputed. Legend label and tooltip text track the title.
+
 ## [3.9.2] — 2026-05-05
 
 ### Fixed (BLOCKERS)

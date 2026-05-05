@@ -161,7 +161,7 @@ server_de <- function(input, output, session, values, add_to_log) {
       prot_ids <- values$plot_selected_proteins; if (length(prot_ids) > 50) prot_ids <- head(prot_ids, 50)
     } else { top_prots <- topTable(values$fit, coef = input$contrast_selector, number = 20); prot_ids <- rownames(top_prots) }
     valid_ids <- intersect(prot_ids, rownames(values$y_protein$E)); if (length(valid_ids) == 0) return(NULL)
-    mat <- values$y_protein$E[valid_ids, , drop = FALSE]; mat_z <- t(apply(mat, 1, cal_z_score))
+    mat <- values$y_protein$E[valid_ids, , drop = FALSE]; mat_z <- t(apply(mat, 1, cal_z_score)); mat_z <- mat_z[rowSums(!is.na(mat_z)) >= 2, , drop = FALSE]; mat_z[is.na(mat_z) | !is.finite(mat_z)] <- 0
     meta <- values$metadata[match(colnames(mat), values$metadata$File.Name), ]; groups <- factor(meta$Group)
     ha <- HeatmapAnnotation(Group = groups, col = list(Group = setNames(rainbow(length(levels(groups))), levels(groups))))
     Heatmap(mat_z, name = "Z-score", top_annotation = ha, cluster_rows = TRUE, cluster_columns = TRUE, show_column_names = FALSE)
@@ -263,8 +263,22 @@ server_de <- function(input, output, session, values, add_to_log) {
     } else if (!is.null(values$plot_selected_proteins)) { prot_ids <- values$plot_selected_proteins; if(length(prot_ids) > 50) prot_ids <- head(prot_ids, 50)
     } else { top_prots <- topTable(values$fit, coef=input$contrast_selector, number=20); prot_ids <- rownames(top_prots) }
     valid_ids <- intersect(prot_ids, rownames(values$y_protein$E)); if (length(valid_ids) == 0) return(NULL)
-    mat <- values$y_protein$E[valid_ids, , drop=FALSE]; mat_z <- t(apply(mat, 1, cal_z_score)); meta <- values$metadata[match(colnames(mat), values$metadata$File.Name), ]; groups <- factor(meta$Group)
-    ha <- HeatmapAnnotation(Group = groups, col = list(Group = setNames(rainbow(length(levels(groups))), levels(groups)))); Heatmap(mat_z, name="Z-score", top_annotation = ha, cluster_rows=TRUE, cluster_columns=TRUE, show_column_names=FALSE)
+    mat <- values$y_protein$E[valid_ids, , drop=FALSE]
+    mat_z <- t(apply(mat, 1, cal_z_score))
+    # Under MaxLFQ the matrix has NAs; hclust can't handle them. Drop all-NA rows
+    # and zero-fill the remainder for clustering only.
+    keep_rows <- rowSums(!is.na(mat_z)) >= 2
+    if (sum(keep_rows) < 2) return(NULL)
+    mat_z <- mat_z[keep_rows, , drop = FALSE]
+    cluster_rows_ok <- !any(is.na(mat_z))
+    cluster_cols_ok <- cluster_rows_ok
+    mat_z[is.na(mat_z)] <- 0
+    meta <- values$metadata[match(colnames(mat_z), values$metadata$File.Name), ]
+    groups <- factor(meta$Group)
+    ha <- HeatmapAnnotation(Group = groups, col = list(Group = setNames(rainbow(length(levels(groups))), levels(groups))))
+    Heatmap(mat_z, name="Z-score", top_annotation = ha,
+            cluster_rows = cluster_rows_ok, cluster_columns = cluster_cols_ok,
+            show_column_names=FALSE)
   }, height = 400) # FIXED HEIGHT
 
   # --- Consistent DE Table (app.R lines 2535-2550) ---
@@ -722,7 +736,7 @@ server_de <- function(input, output, session, values, add_to_log) {
       }
       valid_ids <- intersect(prot_ids, rownames(values$y_protein$E))
       if (length(valid_ids) == 0) return(NULL)
-      mat <- values$y_protein$E[valid_ids, , drop = FALSE]; mat_z <- t(apply(mat, 1, cal_z_score))
+      mat <- values$y_protein$E[valid_ids, , drop = FALSE]; mat_z <- t(apply(mat, 1, cal_z_score)); mat_z <- mat_z[rowSums(!is.na(mat_z)) >= 2, , drop = FALSE]; mat_z[is.na(mat_z) | !is.finite(mat_z)] <- 0
       meta <- values$metadata[match(colnames(mat), values$metadata$File.Name), ]; groups <- factor(meta$Group)
       ha <- HeatmapAnnotation(Group = groups, col = list(Group = setNames(rainbow(length(levels(groups))), levels(groups))))
 
@@ -752,7 +766,7 @@ server_de <- function(input, output, session, values, add_to_log) {
       }
       valid_ids <- intersect(prot_ids, rownames(values$y_protein$E))
       if (length(valid_ids) == 0) return(NULL)
-      mat <- values$y_protein$E[valid_ids, , drop = FALSE]; mat_z <- t(apply(mat, 1, cal_z_score))
+      mat <- values$y_protein$E[valid_ids, , drop = FALSE]; mat_z <- t(apply(mat, 1, cal_z_score)); mat_z <- mat_z[rowSums(!is.na(mat_z)) >= 2, , drop = FALSE]; mat_z[is.na(mat_z) | !is.finite(mat_z)] <- 0
       meta <- values$metadata[match(colnames(mat), values$metadata$File.Name), ]; groups <- factor(meta$Group)
       ha <- HeatmapAnnotation(Group = groups, col = list(Group = setNames(rainbow(length(levels(groups))), levels(groups))))
 
@@ -842,12 +856,17 @@ server_de <- function(input, output, session, values, add_to_log) {
               "Contrast", "Direction", "n_in_group1", "total_in_group1",
               "n_in_group2", "total_in_group2")
     cols <- intersect(cols, names(df))
-    DT::datatable(df[, cols, drop = FALSE],
-      filter = "top",
+    df_show <- df[, cols, drop = FALSE]
+    # Force simple atomic columns — strip names/attrs that confuse DT
+    for (cn in names(df_show)) {
+      v <- df_show[[cn]]
+      df_show[[cn]] <- if (is.numeric(v)) as.numeric(unname(v)) else as.character(unname(v))
+    }
+    DT::datatable(df_show,
       options = list(pageLength = 25, scrollX = TRUE, dom = "lfrtip"),
       rownames = FALSE,
-      caption = htmltools::tags$caption(style = "caption-side: top; font-size: 0.85em; color: #6c757d;",
-        sprintf("%d on/off call(s) at min N = %d.", nrow(df), input$onoff_min_n %||% 2))
+      caption = sprintf("%d on/off call(s) at min N = %d.",
+                        nrow(df_show), input$onoff_min_n %||% 2)
     )
   })
 

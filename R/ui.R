@@ -1111,8 +1111,10 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                       actionButton("completeness_info_btn", icon("question-circle"),
                         title = "About Data Completeness", class = "btn-outline-info btn-sm")
                     ),
-                    # 1. Detected vs Inferred stacked bar
-                    tags$h5("Detected vs Inferred Proteins per Sample", style = "margin-top: 8px;"),
+                    # 1. Detected vs Inferred/Missing stacked bar
+                    # (Title swaps "Inferred" for "Missing" under MaxLFQ — those
+                    # cells are genuinely missing, not filled in by DPC-Quant.)
+                    uiOutput("completeness_stacked_bar_title"),
                     plotlyOutput("completeness_stacked_bar", height = "400px"),
                     tags$hr(),
                     # 2. Precursor Evidence Heatmap

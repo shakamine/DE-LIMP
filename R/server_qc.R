@@ -1845,10 +1845,23 @@ server_qc <- function(input, output, session, values) {
     )
   })
 
+  # Title flips between "Detected vs Inferred" (DPC-Quant — missing values are
+  # filled in by the probability model) and "Detected vs Missing" (MaxLFQ —
+  # missing means actually missing).
+  output$completeness_stacked_bar_title <- renderUI({
+    txt <- if (isTRUE(values$pipeline_mode_used == "maxlfq"))
+      "Detected vs Missing Proteins per Sample"
+    else
+      "Detected vs Inferred Proteins per Sample"
+    tags$h5(txt, style = "margin-top: 8px;")
+  })
+
   # -- 1. Detected vs Inferred Stacked Bar --
   output$completeness_stacked_bar <- renderPlotly({
     cd <- completeness_data()
     req(cd)
+    is_maxlfq <- isTRUE(values$pipeline_mode_used == "maxlfq")
+    inferred_label <- if (is_maxlfq) "Missing" else "Inferred"
 
     df <- data.frame(
       Sample = names(cd$detected_count),
@@ -1877,12 +1890,12 @@ server_qc <- function(input, output, session, values) {
                hovertemplate = ~paste0("<b>", Sample, "</b><br>",
                                       "Detected: ", Detected, " (", det_pct, "%)<br>",
                                       "Group: ", Group, "<extra></extra>")) %>%
-      add_bars(x = ~Inferred, name = "Inferred",
+      add_bars(x = ~Inferred, name = inferred_label,
                marker = list(color = "#E69F00"),
                text = ~paste0(Inferred, " (", inf_pct, "%)"),
                textposition = "inside", textfont = list(color = "white", size = 11),
                hovertemplate = ~paste0("<b>", Sample, "</b><br>",
-                                      "Inferred: ", Inferred, " (", inf_pct, "%)<br>",
+                                      inferred_label, ": ", Inferred, " (", inf_pct, "%)<br>",
                                       "Group: ", Group, "<extra></extra>")) %>%
       layout(
         barmode = "stack",
