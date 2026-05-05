@@ -1852,8 +1852,8 @@ server_qc <- function(input, output, session, values) {
     if (is.null(fc) || is.null(fc$input)) return(NULL)
     fmt <- function(x) if (is.null(x) || is.na(x)) "—" else format(x, big.mark = ",")
     pct_of <- function(num, denom) {
-      if (is.null(num) || is.na(num) || is.null(denom) || is.na(denom) || denom == 0) return("")
-      sprintf(" (%.1f%% kept)", 100 * num / denom)
+      if (is.null(num) || is.na(num) || is.null(denom) || is.na(denom) || denom == 0) return("—")
+      sprintf("%.1f%%", 100 * num / denom)
     }
     rows <- list(
       list(label = "Input precursor rows",                     val = fc$input,                              base = NULL),
@@ -1867,14 +1867,21 @@ server_qc <- function(input, output, session, values) {
            val = fc$after_excluded_files,                      base = fc$after_pgq %||% fc$after_eq %||% fc$after_fdr %||% fc$input)
     )
     rows <- Filter(function(r) !is.null(r$val), rows)
+    # Drop a stage that didn't actually drop anything from the prior pool —
+    # avoids a "100% kept" row that's pure noise (e.g. no excluded runs).
+    rows <- rows[vapply(rows, function(r) {
+      is.null(r$base) || is.na(r$base) || r$val != r$base
+    }, logical(1))]
     div(style = paste0("background: #fff7e6; border: 1px solid #ffd591; ",
                        "border-radius: 6px; padding: 10px 14px; margin-bottom: 14px;"),
       tags$h6(icon("filter"), " QuantUMS / FDR filter waterfall (MaxLFQ pipeline)",
               style = "margin: 0 0 8px 0;"),
       tags$table(class = "table table-sm", style = "margin: 0; font-size: 0.88em;",
         tags$thead(tags$tr(
-          tags$th("Stage"), tags$th(style = "text-align: right;", "Precursor rows"),
-          tags$th(style = "text-align: right;", "Surviving"))),
+          tags$th("Stage"),
+          tags$th(style = "text-align: right;", "Precursor rows"),
+          tags$th(style = "text-align: right;", "% of prior"),
+          tags$th(style = "text-align: right;", "% of input"))),
         tags$tbody(
           lapply(rows, function(r) {
             tags$tr(
@@ -1882,7 +1889,9 @@ server_qc <- function(input, output, session, values) {
               tags$td(style = "text-align: right; font-variant-numeric: tabular-nums;",
                       fmt(r$val)),
               tags$td(style = "text-align: right; color: #6c757d; font-variant-numeric: tabular-nums;",
-                      pct_of(r$val, r$base))
+                      pct_of(r$val, r$base)),
+              tags$td(style = "text-align: right; color: #4a5568; font-variant-numeric: tabular-nums;",
+                      pct_of(r$val, fc$input))
             )
           })
         )

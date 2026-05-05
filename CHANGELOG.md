@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.5] — 2026-05-05
+
+### Changed
+- **MaxLFQ filter waterfall: cleaner display.** Added a "% of input" column so the cumulative drop from the original parquet is visible at every stage (the existing column is "% of prior" — what survived the previous filter). Stages that don't actually drop anything (e.g. excluded-runs filter when no runs were excluded) are now omitted instead of showing a noisy "100% kept" row.
+
 ## [3.9.4] — 2026-05-05
 
 ### Added
