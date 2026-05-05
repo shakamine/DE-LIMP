@@ -226,7 +226,9 @@ server_qc <- function(input, output, session, values) {
     req(values$metadata)
     meta <- values$metadata
     color_choices <- "Group"
-    if ("Batch" %in% colnames(meta) && any(nzchar(meta$Batch))) color_choices <- c(color_choices, "Batch")
+    batch_name <- if (!is.null(values$batch_name) && nzchar(values$batch_name)) values$batch_name else "Batch"
+    if ("Batch" %in% colnames(meta) && any(nzchar(meta$Batch)))
+      color_choices <- c(color_choices, setNames("Batch", batch_name))
     # Add custom covariates if they have data
     cov1_name <- if (!is.null(values$cov1_name) && nzchar(values$cov1_name)) values$cov1_name else "Covariate1"
     cov2_name <- if (!is.null(values$cov2_name) && nzchar(values$cov2_name)) values$cov2_name else "Covariate2"

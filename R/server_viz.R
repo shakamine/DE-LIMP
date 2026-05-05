@@ -213,8 +213,9 @@ server_viz <- function(input, output, session, values, add_to_log, is_hf_space) 
 
         # Build annotation rows
         annot_rows <- list()
+        batch_name <- if (!is.null(values$batch_name) && nzchar(values$batch_name)) values$batch_name else "Batch"
         annot_fields <- list(
-          Group = "Group", Batch = "Batch",
+          Group = "Group", Batch = batch_name,
           Covariate1 = cov1_name, Covariate2 = cov2_name
         )
         for (col_name in names(annot_fields)) {
@@ -1001,8 +1002,9 @@ server_viz <- function(input, output, session, values, add_to_log, is_hf_space) 
     req(values$metadata)
     meta <- values$metadata
     color_choices <- "Group"
+    batch_name <- if (!is.null(values$batch_name) && nzchar(values$batch_name)) values$batch_name else "Batch"
     if ("Batch" %in% colnames(meta) && any(nzchar(meta$Batch)))
-      color_choices <- c(color_choices, "Batch")
+      color_choices <- c(color_choices, setNames("Batch", batch_name))
     cov1_name <- if (!is.null(values$cov1_name) && nzchar(values$cov1_name)) values$cov1_name else "Covariate1"
     cov2_name <- if (!is.null(values$cov2_name) && nzchar(values$cov2_name)) values$cov2_name else "Covariate2"
     if ("Covariate1" %in% colnames(meta) && any(nzchar(meta$Covariate1)))

@@ -5,6 +5,12 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.6] — 2026-05-05
+
+### Fixed
+- **PCA / MDS "Color by" dropdown still showed "Batch" after rename**: when the user renamed Batch → Year in the covariate panel, the PCA and MDS color selectors stayed on the canonical "Batch" label. Both observers now consult `values$batch_name` and use `setNames("Batch", display_name)` so the dropdown shows the user's chosen label while the underlying value (used for `meta$Batch` lookup) stays canonical.
+- **Heatmap top annotation legend** also now reflects the renamed covariate label.
+
 ## [3.9.5] — 2026-05-05
 
 ### Changed
