@@ -2505,18 +2505,56 @@ parse_search_info_md <- function(md_path) {
                     error = function(e) character(0))
   if (length(lines) == 0) return(NULL)
 
-  # Extract `**Key**: value` and `- **key**: \`value\`` patterns.
-  # Strip leading bullets/whitespace, capture key + value.
+  # v3.10.13 — extract `**Key**: value` and `- **Key**: \`value\``.
+  # Previous regex used a leading `[\\s\\-*]*` greedy class that ate the
+  # `**` bold markers of the key, causing every line to fail to match
+  # and kv to stay empty (= no instrument_metadata = no Methods text
+  # after Load-from-HPC). Rewritten as a simple two-step extract:
+  #   1. Find the `**Key**` token via regexpr (non-greedy by character
+  #      class `[^*]+` between the bold markers).
+  #   2. Take everything after the closing `**` and the colon as the value;
+  #      strip surrounding whitespace and optional backticks.
   kv <- list()
   for (ln in lines) {
-    m <- regmatches(ln, regexec("^[\\s\\-*]*\\*\\*([^*]+)\\*\\*\\s*:\\s*`?([^`\\n]*?)`?\\s*$", ln, perl = TRUE))[[1]]
-    if (length(m) >= 3) {
-      key <- tolower(gsub("\\s+", "_", trimws(m[2])))
-      val <- trimws(m[3])
-      if (nzchar(val)) kv[[key]] <- val
+    pos <- regexpr("\\*\\*[^*]+\\*\\*[[:space:]]*:", ln)
+    if (pos < 0) next
+    key_token <- regmatches(ln, pos)
+    # v3.10.13b — strip * and : but PRESERVE whitespace, then collapse
+    # whitespace runs to underscore. Stripping whitespace first turned
+    # "Acquisition mode" into "acquisitionmode" which didn't match the
+    # `kv$acquisition_mode` lookup downstream.
+    key <- gsub("[*:]", "", key_token)
+    key <- tolower(gsub("[[:space:]]+", "_", trimws(key)))
+    val <- trimws(substr(ln, pos + attr(pos, "match.length"), nchar(ln)))
+    val <- sub("^`", "", val)
+    val <- sub("`$", "", val)
+    val <- trimws(val)
+    if (nzchar(key) && nzchar(val)) kv[[key]] <- val
+  }
+
+  # v3.10.13b — FASTA paths live under a `### FASTA Files (N)` heading
+  # as one-bullet-per-line, NOT as a `**FASTA**:` key-value. Parse them
+  # separately. Same for raw files if needed (not currently used by
+  # consumers, but parseable the same way).
+  fasta_files <- character(0)
+  in_fasta_section <- FALSE
+  for (ln in lines) {
+    if (grepl("^###[[:space:]]*FASTA Files", ln)) { in_fasta_section <- TRUE; next }
+    if (in_fasta_section) {
+      if (grepl("^###", ln) || (!nzchar(trimws(ln)) && length(fasta_files) > 0)) {
+        in_fasta_section <- FALSE; next
+      }
+      m <- regmatches(ln, regexpr("`[^`]+`", ln))
+      if (length(m) > 0) {
+        fasta_files <- c(fasta_files, gsub("`", "", m))
+      } else if (grepl("^-[[:space:]]*[^[:space:]]", ln)) {
+        # Plain `- /path/file.fasta` (no backticks)
+        fasta_files <- c(fasta_files, trimws(sub("^-[[:space:]]*", "", ln)))
+      }
     }
   }
-  if (length(kv) == 0) return(NULL)
+
+  if (length(kv) == 0 && length(fasta_files) == 0) return(NULL)
 
   num <- function(x, default = NA_real_) {
     if (is.null(x) || !nzchar(x)) return(default)
@@ -2568,7 +2606,8 @@ parse_search_info_md <- function(md_path) {
 
   list(
     search_params       = search_params,
-    fasta_files         = if (!is.null(kv$fasta)) strsplit(kv$fasta, ",\\s*")[[1]]
+    fasta_files         = if (length(fasta_files) > 0) fasta_files
+                          else if (!is.null(kv$fasta)) strsplit(kv$fasta, ",[[:space:]]*")[[1]]
                           else character(0),
     normalization       = kv$normalization %||% "on",
     search_mode         = kv$search_mode %||% "libfree",

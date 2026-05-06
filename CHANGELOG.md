@@ -5,6 +5,16 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.13] — 2026-05-06
+
+### Fixed
+- **`parse_search_info_md()` was extracting nothing — Methods text after Load-from-HPC had no instrument settings.** Three bugs in the parser, all fixed by re-reading and stress-testing against Brett's real `search_info.md`:
+  1. **Greedy character class ate the bold markers.** The regex `^[\\s\\-*]*\\*\\*([^*]+)\\*\\*...` had `*` in the leading class — and `*` is greedy, so it consumed the `**` of `**Instrument**`, breaking the match. Every line failed; `kv` stayed empty; `instrument_metadata` was NULL. Replaced with a two-step extract (locate the bold-key token, then peel value off the rest of the line).
+  2. **Whitespace stripped before underscore conversion.** "Acquisition mode" → my key normalization first stripped all whitespace (`gsub("[*:[:space:]]", "", ...)`) then tried to convert whitespace to underscores. By that point there was no whitespace left, so the key became `acquisitionmode` and didn't match `kv$acquisition_mode`. Now strips only `*:` first, THEN collapses whitespace runs to `_`.
+  3. **FASTA paths weren't extracted.** They live under a `### FASTA Files (N)` heading as one bullet per line with backtick-quoted paths — not as a `**FASTA**:` key-value. Added a section parser that switches into "FASTA Files" mode on the heading and pulls each backtick-quoted path until the next heading.
+
+  Verified against Gemma_set2's real `search_info.md`: instrument_model = "timsTOF HT", serial, acquisition_mode = "dia-PASEF", DIA windows = 37, m/z range = "100-1700", and both FASTA files all extract correctly.
+
 ## [3.10.12] — 2026-05-06
 
 ### Fixed
