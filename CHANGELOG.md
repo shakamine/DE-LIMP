@@ -5,6 +5,14 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.9] — 2026-05-06
+
+### Added
+- **Complete Analysis ZIP now includes a `figures/` subdirectory with 9 publication-quality SVG figures**: volcano, heatmap_top20, violin_top10_up, violin_top10_down, pca, qc_group_distribution, normalization_density, data_completeness, sample_correlation, pvalue_distribution. Ported from cascadia-denovo branch (commits `38c9b3b` + `c2329c8` — that work was on `R/server_ai.R` and never merged to main; v3.10.4 then consolidated all Claude exports into Complete Analysis, but missed bringing the figures along). Each figure uses the `svg() + print() + dev.off()` pattern (works on headless Linux/HF where `ggsave()`'s display path is unreliable). Each figure wrapped in `safe_section()` so failures land in MANIFEST instead of getting silently dropped.
+- **PROMPT.md updated**: now references the figures/ subdirectory with a per-figure descriptor table, and instructs the LLM to use markdown image syntax (`![title](figures/X.svg)`) in its analysis. Adds analytical-context cues: reference violin plots when discussing DE proteins, sample_correlation for batch/replicate concerns, normalization_density for normalization, pvalue_distribution for study-power discussions.
+- **`pvalue_distribution.svg` figure (new, not in cascadia)**: per-contrast raw P-value histogram with adj.P.Val < 0.05 callout. Spike at 0 = real signal; flat = no signal; spike at 1 = something off (model misspecification, batch effect not in design, etc.). Surfaces the diagnostic that lets a reviewer judge the experiment at a glance.
+- **ZIP path-preservation fix**: `zip(file, basename(files_to_zip))` was stripping the `figures/` prefix off SVG paths, dumping them at the zip root. Now uses `normalizePath()` + relative-path computation so subdirectory structure is preserved in the archive.
+
 ## [3.10.8] — 2026-05-06
 
 ### Fixed (Complete Analysis export — silently skipped DIA-NN files)

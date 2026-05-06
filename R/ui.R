@@ -2207,7 +2207,8 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                 tags$li(tags$strong("session.rds"), " -- Complete session state (reload in DE-LIMP)"),
                 tags$li(tags$strong("methods.txt"), " / ", tags$strong("parameters.txt"), " -- Pipeline parameters, normalization, app version"),
                 tags$li(tags$strong("reproducibility_log.R"), " -- R code log + sessionInfo() to reproduce every step"),
-                tags$li(tags$strong("PROMPT.md"), " -- AI analysis prompt with biological questions (DE-aware)"),
+                tags$li(tags$strong("figures/"), " -- 9 publication-quality SVG figures: volcano, heatmap_top20, violin_top10_up/down, pca, qc_group_distribution, normalization_density, data_completeness, sample_correlation, pvalue_distribution"),
+                tags$li(tags$strong("PROMPT.md"), " -- AI analysis prompt with biological questions and figure-reference instructions (DE-aware)"),
                 tags$li(tags$strong("MANIFEST.txt"), " -- Per-section export status (any skipped files explained here)")
               )
             ),

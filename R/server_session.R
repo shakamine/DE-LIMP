@@ -1916,6 +1916,279 @@ server_session <- function(input, output, session, values, add_to_log) {
           files_to_zip <- c(files_to_zip, p_file)
         })
 
+        # === 21a. SVG figures (figures/ subdirectory) ===
+        # Ported from feature/cascadia-denovo (commits 38c9b3b + c2329c8).
+        # Use svg() + print() + dev.off() instead of ggsave() — works on
+        # headless Linux/HF where ggsave's quartz/cairo path is unreliable.
+        # Each figure wrapped in safe_section() so failures get logged in
+        # MANIFEST instead of silently dropped.
+        incProgress(0.83, detail = "SVG figures...")
+        fig_dir <- file.path(tmp_dir, "figures")
+        dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+        # Volcano (uses first contrast)
+        if (has_de) {
+          safe_section(manifest, "figures/volcano.svg", {
+            df <- limma::topTable(values$fit, coef = colnames(values$fit$contrasts)[1],
+              number = Inf) |> as.data.frame()
+            if (!"Protein.Group" %in% colnames(df)) df$Protein.Group <- rownames(df)
+            df$Significance <- ifelse(df$adj.P.Val < 0.05, "Significant", "Not Sig")
+            p <- ggplot2::ggplot(df, ggplot2::aes(x = logFC, y = -log10(P.Value),
+                color = Significance)) +
+              ggplot2::geom_point(alpha = 0.5, size = 1) +
+              ggplot2::scale_color_manual(values = c("Significant" = "#E74C3C",
+                "Not Sig" = "#BDC3C7")) +
+              ggplot2::geom_vline(xintercept = c(-0.6, 0.6), linetype = "dashed",
+                color = "orange") +
+              ggplot2::labs(title = paste("Volcano:",
+                colnames(values$fit$contrasts)[1]),
+                x = "logFC", y = "-log10(P-Value)") +
+              ggplot2::theme_bw()
+            f <- file.path(fig_dir, "volcano.svg")
+            svg(f, width = 8, height = 6); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+            print(p); dev.off()
+            stopifnot(file.exists(f) && file.info(f)$size > 0)
+            files_to_zip <- c(files_to_zip, f)
+          })
+        }
+
+        # Heatmap (top 20 DE proteins by adj.P.Val)
+        if (has_de) {
+          safe_section(manifest, "figures/heatmap_top20.svg", {
+            df <- limma::topTable(values$fit, coef = colnames(values$fit$contrasts)[1],
+              number = Inf) |> as.data.frame()
+            top20 <- head(df[order(df$adj.P.Val), ], 20)
+            mat_h <- values$y_protein$E[rownames(top20), , drop = FALSE]
+            mat_z <- t(apply(mat_h, 1, function(x) (x - mean(x, na.rm=TRUE)) /
+                                                   sd(x, na.rm=TRUE)))
+            mat_z[!is.finite(mat_z)] <- 0
+            f <- file.path(fig_dir, "heatmap_top20.svg")
+            svg(f, width = 10, height = 8); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+            meta_h <- values$metadata[match(colnames(mat_h),
+              values$metadata$File.Name), ]
+            ha <- ComplexHeatmap::HeatmapAnnotation(Group = factor(meta_h$Group))
+            ComplexHeatmap::draw(ComplexHeatmap::Heatmap(mat_z, name = "Z-score",
+              top_annotation = ha, cluster_rows = TRUE, cluster_columns = TRUE,
+              show_column_names = FALSE))
+            dev.off()
+            stopifnot(file.exists(f) && file.info(f)$size > 0)
+            files_to_zip <- c(files_to_zip, f)
+          })
+        }
+
+        # Violin plots — top 10 up + top 10 down DE proteins
+        if (has_de) {
+          safe_section(manifest, "figures/violin_top10.svg", {
+            df <- limma::topTable(values$fit, coef = colnames(values$fit$contrasts)[1],
+              number = Inf) |> as.data.frame()
+            if (!"Protein.Group" %in% colnames(df)) df$Protein.Group <- rownames(df)
+            sig <- df[df$adj.P.Val < 0.05, ]
+            stopifnot(nrow(sig) >= 1)
+            wrote_any <- FALSE
+            for (direction in c("up", "down")) {
+              ids <- if (direction == "up") {
+                head(sig$Protein.Group[order(-sig$logFC)], 10)
+              } else head(sig$Protein.Group[order(sig$logFC)], 10)
+              if (length(ids) == 0) next
+              long <- as.data.frame(values$y_protein$E[ids, , drop = FALSE]) |>
+                tibble::rownames_to_column("Protein") |>
+                tidyr::pivot_longer(-Protein, names_to = "File.Name",
+                  values_to = "LogIntensity")
+              long <- dplyr::left_join(long, values$metadata, by = "File.Name")
+              p <- ggplot2::ggplot(long, ggplot2::aes(x = Group, y = LogIntensity,
+                  fill = Group)) +
+                ggplot2::geom_violin(alpha = 0.5, trim = FALSE) +
+                ggplot2::geom_jitter(width = 0.2, size = 1, alpha = 0.6) +
+                ggplot2::facet_wrap(~Protein, scales = "free_y", ncol = 5) +
+                ggplot2::theme_bw() +
+                ggplot2::labs(title = paste("Top 10",
+                  if (direction == "up") "Upregulated" else "Downregulated",
+                  "Proteins"), y = "Log2 Intensity") +
+                ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45,
+                  hjust = 1))
+              f <- file.path(fig_dir, paste0("violin_top10_", direction, ".svg"))
+              svg(f, width = 14, height = 6)
+              print(p); dev.off()
+              if (file.exists(f) && file.info(f)$size > 0) {
+                files_to_zip <- c(files_to_zip, f)
+                wrote_any <- TRUE
+              }
+            }
+            stopifnot(wrote_any)
+          })
+        }
+
+        # PCA
+        safe_section(manifest, "figures/pca.svg", {
+          E_pca <- values$y_protein$E
+          E_pca <- E_pca[complete.cases(E_pca), , drop = FALSE]
+          stopifnot(nrow(E_pca) >= 10, ncol(E_pca) >= 3)
+          pca_res <- prcomp(t(E_pca), scale. = TRUE)
+          pca_df <- data.frame(PC1 = pca_res$x[, 1], PC2 = pca_res$x[, 2],
+                                File.Name = rownames(pca_res$x),
+                                stringsAsFactors = FALSE)
+          pca_df <- dplyr::left_join(pca_df, values$metadata, by = "File.Name")
+          var_exp <- round(100 * summary(pca_res)$importance[2, 1:2], 1)
+          p <- ggplot2::ggplot(pca_df, ggplot2::aes(x = PC1, y = PC2, color = Group)) +
+            ggplot2::geom_point(size = 3) +
+            ggplot2::stat_ellipse(level = 0.95, linetype = "dashed") +
+            ggplot2::labs(title = "PCA",
+              x = paste0("PC1 (", var_exp[1], "%)"),
+              y = paste0("PC2 (", var_exp[2], "%)")) +
+            ggplot2::theme_bw()
+          f <- file.path(fig_dir, "pca.svg")
+          svg(f, width = 8, height = 6); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+          print(p); dev.off()
+          stopifnot(file.exists(f) && file.info(f)$size > 0)
+          files_to_zip <- c(files_to_zip, f)
+        })
+
+        # QC group distribution (precursors per sample, faceted by group)
+        safe_section(manifest, "figures/qc_group_distribution.svg", {
+          stopifnot(!is.null(values$raw_data), !is.null(values$raw_data$E))
+          qc_df <- data.frame(
+            Sample = colnames(values$raw_data$E),
+            Proteins = colSums(!is.na(values$raw_data$E) &
+                               is.finite(values$raw_data$E)),
+            stringsAsFactors = FALSE)
+          qc_df$Group <- values$metadata$Group[match(qc_df$Sample,
+            values$metadata$File.Name)]
+          qc_df <- qc_df[!is.na(qc_df$Group), ]
+          stopifnot(nrow(qc_df) > 2)
+          p <- ggplot2::ggplot(qc_df, ggplot2::aes(x = Group, y = Proteins,
+              fill = Group)) +
+            ggplot2::geom_violin(alpha = 0.5, trim = FALSE, scale = "width") +
+            ggplot2::geom_jitter(width = 0.15, size = 1.5, alpha = 0.6) +
+            ggplot2::theme_bw() +
+            ggplot2::labs(title = "Precursor Identifications per Sample",
+              y = "Precursors Detected", x = "") +
+            ggplot2::theme(legend.position = "none")
+          f <- file.path(fig_dir, "qc_group_distribution.svg")
+          svg(f, width = 8, height = 5); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+          print(p); dev.off()
+          stopifnot(file.exists(f) && file.info(f)$size > 0)
+          files_to_zip <- c(files_to_zip, f)
+        })
+
+        # Normalization density overlay
+        safe_section(manifest, "figures/normalization_density.svg", {
+          E_n <- values$y_protein$E
+          density_list <- lapply(colnames(E_n), function(s) {
+            v <- E_n[, s]
+            v <- v[is.finite(v) & !is.na(v)]
+            if (length(v) < 10) return(NULL)
+            d <- density(v, n = 256)
+            grp <- values$metadata$Group[match(s, values$metadata$File.Name)]
+            data.frame(Sample = s, x = d$x, y = d$y, Group = grp,
+                       stringsAsFactors = FALSE)
+          })
+          dens_df <- do.call(rbind, density_list)
+          stopifnot(!is.null(dens_df), nrow(dens_df) > 0)
+          p <- ggplot2::ggplot(dens_df, ggplot2::aes(x = x, y = y,
+              group = Sample, color = Group)) +
+            ggplot2::geom_line(alpha = 0.4, linewidth = 0.5) +
+            ggplot2::theme_bw() +
+            ggplot2::labs(x = "Log2 Intensity", y = "Density",
+              title = "Post-Normalization Signal Distribution") +
+            ggplot2::theme(legend.position = "bottom")
+          f <- file.path(fig_dir, "normalization_density.svg")
+          svg(f, width = 10, height = 6); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+          print(p); dev.off()
+          stopifnot(file.exists(f) && file.info(f)$size > 0)
+          files_to_zip <- c(files_to_zip, f)
+        })
+
+        # Data completeness bar chart
+        safe_section(manifest, "figures/data_completeness.svg", {
+          stopifnot(!is.null(values$raw_data), !is.null(values$raw_data$E))
+          total_prec <- nrow(values$raw_data$E)
+          comp_df <- data.frame(
+            Sample = colnames(values$raw_data$E),
+            Detected_Pct = 100 * colSums(!is.na(values$raw_data$E) &
+              is.finite(values$raw_data$E)) / total_prec,
+            stringsAsFactors = FALSE)
+          comp_df$Group <- values$metadata$Group[match(comp_df$Sample,
+            values$metadata$File.Name)]
+          comp_df <- comp_df[!is.na(comp_df$Group), ]
+          comp_df <- comp_df[order(comp_df$Group, comp_df$Detected_Pct), ]
+          comp_df$Order <- seq_len(nrow(comp_df))
+          p <- ggplot2::ggplot(comp_df, ggplot2::aes(x = reorder(Sample, Order),
+              y = Detected_Pct, fill = Group)) +
+            ggplot2::geom_col(width = 0.8) +
+            ggplot2::geom_hline(yintercept = 50, linetype = "dashed",
+              color = "grey40") +
+            ggplot2::theme_bw() +
+            ggplot2::labs(x = "", y = "Precursors Detected (%)",
+              title = "Per-Sample Data Completeness") +
+            ggplot2::theme(axis.text.x = ggplot2::element_blank(),
+              axis.ticks.x = ggplot2::element_blank(),
+              legend.position = "bottom")
+          f <- file.path(fig_dir, "data_completeness.svg")
+          svg(f, width = 10, height = 5); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+          print(p); dev.off()
+          stopifnot(file.exists(f) && file.info(f)$size > 0)
+          files_to_zip <- c(files_to_zip, f)
+        })
+
+        # Sample correlation heatmap (replicate consistency)
+        safe_section(manifest, "figures/sample_correlation.svg", {
+          E_c <- values$y_protein$E
+          E_clean <- E_c[complete.cases(E_c), , drop = FALSE]
+          stopifnot(nrow(E_clean) > 100)
+          v <- apply(E_clean, 1, var, na.rm = TRUE)
+          top_v <- names(sort(v, decreasing = TRUE))[1:min(2000, length(v))]
+          cor_mat <- cor(E_clean[top_v, ], use = "pairwise.complete.obs")
+          if (length(unique(values$metadata$Group)) >= 2) {
+            grps <- sort(unique(values$metadata$Group))
+            ord <- unlist(lapply(grps,
+              function(g) values$metadata$File.Name[values$metadata$Group == g]))
+            ord <- ord[ord %in% colnames(cor_mat)]
+            if (length(ord) == ncol(cor_mat)) cor_mat <- cor_mat[ord, ord]
+          }
+          cor_long <- reshape2::melt(cor_mat)
+          colnames(cor_long) <- c("S1", "S2", "r")
+          p <- ggplot2::ggplot(cor_long, ggplot2::aes(x = S1, y = S2, fill = r)) +
+            ggplot2::geom_tile() +
+            ggplot2::scale_fill_gradient2(low = "#2166AC", mid = "#F7F7F7",
+              high = "#B2182B", midpoint = 0.85, limits = c(0.6, 1)) +
+            ggplot2::theme_minimal() +
+            ggplot2::labs(title = "Sample Correlation Heatmap (Replicate Consistency)") +
+            ggplot2::theme(axis.text = ggplot2::element_blank(),
+              axis.ticks = ggplot2::element_blank(),
+              axis.title = ggplot2::element_blank())
+          f <- file.path(fig_dir, "sample_correlation.svg")
+          svg(f, width = 8, height = 7); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+          print(p); dev.off()
+          stopifnot(file.exists(f) && file.info(f)$size > 0)
+          files_to_zip <- c(files_to_zip, f)
+        })
+
+        # P-value distribution histogram (per user request, not in cascadia)
+        # Spike at 0 = real signal; flat = no signal; spike at 1 = something off.
+        if (has_de) {
+          safe_section(manifest, "figures/pvalue_distribution.svg", {
+            df <- limma::topTable(values$fit, coef = colnames(values$fit$contrasts)[1],
+              number = Inf) |> as.data.frame()
+            stopifnot("P.Value" %in% colnames(df))
+            n_sig <- sum(df$adj.P.Val < 0.05, na.rm = TRUE)
+            p <- ggplot2::ggplot(df, ggplot2::aes(x = P.Value)) +
+              ggplot2::geom_histogram(breaks = seq(0, 1, by = 0.05),
+                fill = "#3498DB", color = "white", alpha = 0.85) +
+              ggplot2::geom_vline(xintercept = 0.05, linetype = "dashed",
+                color = "#E74C3C") +
+              ggplot2::labs(title = "P-Value Distribution",
+                subtitle = sprintf("%s: %d proteins; %d at adj.P.Val < 0.05",
+                  colnames(values$fit$contrasts)[1], nrow(df), n_sig),
+                x = "Raw P-Value", y = "Number of Proteins") +
+              ggplot2::theme_bw()
+            f <- file.path(fig_dir, "pvalue_distribution.svg")
+            svg(f, width = 8, height = 5); on.exit(try(dev.off(), silent=TRUE), add=TRUE)
+            print(p); dev.off()
+            stopifnot(file.exists(f) && file.info(f)$size > 0)
+            files_to_zip <- c(files_to_zip, f)
+          })
+        }
+
         # === 21. PROMPT.md (LLM analysis prompt — DE-aware) ===
         incProgress(0.85, detail = "AI prompt...")
         safe_section(manifest, "PROMPT.md", {
@@ -2033,7 +2306,27 @@ You are a proteomics bioinformatics expert. Provide biological insights from thi
 | `reproducibility_log.R` | R code log + sessionInfo() to reproduce every step | |
 | `search_info.md` | Full DIA-NN search parameters and job metadata | |
 | `session.rds` | Complete DE-LIMP session state (reload via Output > Load Session) | |
+| `figures/` | Publication-quality SVG figures (see list below) | |
 | `MANIFEST.txt` | Per-section export status (any [SKIPPED] entries explain what's missing and why) | |
+
+## Figures
+
+The `figures/` subdirectory contains SVG figures you should reference in your analysis.
+**Use markdown image syntax** (e.g. `![Volcano](figures/volcano.svg)`) when discussing them.
+
+| Figure | Description |
+|--------|-------------|
+| `figures/volcano.svg` | Volcano plot for the first contrast — log2FC vs −log10(P-Value), red = adj.P.Val < 0.05 |
+| `figures/heatmap_top20.svg` | Z-score heatmap of the top 20 DE proteins (by adj.P.Val) clustered both axes |
+| `figures/violin_top10_up.svg` / `_down.svg` | Per-protein violin distributions for the top 10 up- and down-regulated DE proteins |
+| `figures/pca.svg` | PCA scatter colored by Group, with 95% confidence ellipses |
+| `figures/qc_group_distribution.svg` | Violin distribution of precursor identifications per sample, faceted by group |
+| `figures/normalization_density.svg` | Per-sample density curves of log2 intensity — should overlay tightly post-normalization |
+| `figures/data_completeness.svg` | Per-sample bar chart of percent precursors detected, ordered by group |
+| `figures/sample_correlation.svg` | Pearson correlation heatmap between all samples (replicate consistency) |
+| `figures/pvalue_distribution.svg` | Histogram of raw P-values for the first contrast — spike near 0 = real signal, flat = no signal |
+
+When discussing top DE proteins, reference the violin plots. When discussing batch / replicate concerns, reference the sample correlation heatmap. When discussing normalization, reference the density overlay. When discussing study power, reference the p-value distribution.
 
 ## Sample groups
 ", group_info, "
@@ -2077,10 +2370,20 @@ You are a proteomics bioinformatics expert. Provide biological insights from thi
         files_to_zip <- c(files_to_zip, manifest_file)
 
         # === Create ZIP ===
+        # v3.10.9 — preserve subdirectory structure (figures/) by computing
+        # paths relative to tmp_dir instead of basename(). Otherwise the
+        # SVGs inside figures/ would land at the zip root with their
+        # parents stripped.
         incProgress(0.90, detail = "Creating ZIP...")
         old_wd <- setwd(tmp_dir)
         on.exit(setwd(old_wd), add = TRUE)
-        zip(file, basename(files_to_zip))
+        rel_paths <- vapply(files_to_zip, function(p) {
+          tryCatch(sub(paste0("^", normalizePath(tmp_dir, mustWork = FALSE),
+                              .Platform$file.sep, "?"),
+                       "", normalizePath(p, mustWork = FALSE)),
+                   error = function(e) basename(p))
+        }, character(1), USE.NAMES = FALSE)
+        zip(file, rel_paths)
 
         message("[DE-LIMP] Complete analysis export: ", length(files_to_zip), " files")
       })
