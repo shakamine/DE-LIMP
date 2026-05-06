@@ -1688,7 +1688,7 @@ server_session <- function(input, output, session, values, add_to_log) {
             grep("^Detected_", colnames(det_df), value = TRUE))]
           det_file <- file.path(tmp_dir, "detection_matrix.csv")
           write.csv(det_df, det_file, row.names = FALSE)
-          files_to_zip <<- c(files_to_zip, det_file)
+          files_to_zip <- c(files_to_zip, det_file)
         })
 
         # === 15. Quartile profiles + variable proteins ===
@@ -1729,18 +1729,18 @@ server_session <- function(input, output, session, values, add_to_log) {
           qdf <- qdf[order(-qdf$Avg_Intensity), ]
           q_file <- file.path(tmp_dir, "quartile_profiles.csv")
           write.csv(qdf, q_file, row.names = FALSE)
-          files_to_zip <<- c(files_to_zip, q_file)
-          quartile_df <<- qdf
+          files_to_zip <- c(files_to_zip, q_file)
+          quartile_df <- qdf
         })
 
         safe_section(manifest, "variable_proteins.csv", {
           stopifnot(!is.null(quartile_df))
           var_df <- quartile_df[quartile_df$Quartile_Range >= 2, ]
           var_df <- var_df[order(-var_df$Quartile_Range, -var_df$Avg_Intensity), ]
-          n_variable <<- nrow(var_df)
+          n_variable <- nrow(var_df)
           var_file <- file.path(tmp_dir, "variable_proteins.csv")
           write.csv(var_df, var_file, row.names = FALSE)
-          files_to_zip <<- c(files_to_zip, var_file)
+          files_to_zip <- c(files_to_zip, var_file)
         })
 
         # === 16. DE results (all contrasts) — only when DE was run ===
@@ -1761,7 +1761,7 @@ server_session <- function(input, output, session, values, add_to_log) {
             }))
             de_file <- file.path(tmp_dir, "DE_Results_Full.csv")
             write.csv(full_results, de_file, row.names = FALSE)
-            files_to_zip <<- c(files_to_zip, de_file)
+            files_to_zip <- c(files_to_zip, de_file)
           })
         } else {
           manifest$lines <- c(manifest$lines,
@@ -1780,7 +1780,7 @@ server_session <- function(input, output, session, values, add_to_log) {
             }
             qc_file <- file.path(tmp_dir, "QC_Metrics.csv")
             write.csv(qc_df, qc_file, row.names = FALSE)
-            files_to_zip <<- c(files_to_zip, qc_file)
+            files_to_zip <- c(files_to_zip, qc_file)
           })
         }
 
@@ -1797,7 +1797,7 @@ server_session <- function(input, output, session, values, add_to_log) {
             }))
             ph_file <- file.path(tmp_dir, "Phospho_DE_Results.csv")
             write.csv(ph_results, ph_file, row.names = FALSE)
-            files_to_zip <<- c(files_to_zip, ph_file)
+            files_to_zip <- c(files_to_zip, ph_file)
           })
         }
 
@@ -1808,7 +1808,7 @@ server_session <- function(input, output, session, values, add_to_log) {
             ga <- ga[nzchar(ga$Group %||% "") & !is.na(ga$Group), ]
             ga_file <- file.path(tmp_dir, "group_assignments.csv")
             write.csv(ga, ga_file, row.names = FALSE)
-            files_to_zip <<- c(files_to_zip, ga_file)
+            files_to_zip <- c(files_to_zip, ga_file)
           })
         }
 
@@ -1858,7 +1858,7 @@ server_session <- function(input, output, session, values, add_to_log) {
             paste0("  R: ", R.version.string))
           p_file <- file.path(tmp_dir, "parameters.txt")
           writeLines(params, p_file)
-          files_to_zip <<- c(files_to_zip, p_file)
+          files_to_zip <- c(files_to_zip, p_file)
         })
 
         # === 21. PROMPT.md (LLM analysis prompt — DE-aware) ===
@@ -1974,7 +1974,7 @@ You are a proteomics bioinformatics expert. Provide biological insights from thi
 ")
           prompt_file <- file.path(tmp_dir, "PROMPT.md")
           writeLines(prompt_text, prompt_file)
-          files_to_zip <<- c(files_to_zip, prompt_file)
+          files_to_zip <- c(files_to_zip, prompt_file)
         })
 
         # === 22. MANIFEST.txt — record what was included / skipped ===

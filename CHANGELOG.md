@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.5] — 2026-05-06
+
+### Fixed
+- **HOTFIX: Export Complete Analysis ZIP was missing 9 files that MANIFEST.txt claimed were `[OK]`.** The new sections added in v3.10.4 (DE_Results_Full.csv, QC_Metrics.csv, Phospho_DE_Results.csv, group_assignments.csv, parameters.txt, PROMPT.md, detection_matrix.csv, quartile_profiles.csv, variable_proteins.csv) used `files_to_zip <<- c(files_to_zip, file)` inside their `safe_section({...})` bodies. CLAUDE.md gotcha: `<<-` inside `withProgress()` falls through to the global env (the parent chain is broken because `withProgress` uses `eval(substitute(expr), env)`). Each `<<-` was silently writing a phantom global named `files_to_zip` instead of mutating the inner accumulator. The bodies didn't error so `safe_section()` recorded `[OK]`, but the actual `zip()` call only saw the OG sections that used plain `<-`. Replaced all `<<-` with `<-` in those sections — promise semantics evaluate the safe_section body in the caller's env (the `withProgress` inner eval env where `files_to_zip` lives) and `<-` writes there directly. Caught by Brett's downstream Claude analysis after a v3.10.4 export was uploaded.
+
 ## [3.10.4] — 2026-05-06
 
 ### Changed
