@@ -5,6 +5,12 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.16] — 2026-05-06
+
+### Fixed
+- **Gene-map TSV parse errors no longer silent** (audit item #7): when an NCBI gene_map.tsv file is present but malformed, both the live Expression-Grid lookup (`R/server_viz.R:293,325`) and the Claude-export gene lookup (`R/server_viz.R:1963,1986`) used to return NULL silently, leaving the entire DE table labeled with bare accessions instead of gene symbols. Now: file-absent still falls through silently (correct behaviour), but file-present-but-unparseable raises a yellow Shiny notification naming the file and the parse error, plus logs a `[Grid]` / `[Export]` console line. The user finds out within 12 seconds instead of "weeks later when a reviewer wonders why your DE table has no gene names."
+- **`req(input$contrast_selector)` accepted empty string** (audit item #11): standard `shiny::req()` considers `""` truthy, so an empty selectInput leaked through to `topTable(fit, coef = "")` which errors deep in limma. Replaced 8 sites in `server_de.R` and `server_gsea.R` with `req_nzchar(input$contrast_selector)` (helper added in v3.9.14) that explicitly rejects empty strings.
+
 ## [3.9.15] — 2026-05-05
 
 ### Added

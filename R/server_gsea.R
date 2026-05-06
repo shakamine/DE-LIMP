@@ -127,7 +127,7 @@ server_gsea <- function(input, output, session, values, add_to_log) {
 
   # --- Run GSEA (supports BP/MF/CC/KEGG) ---
   observeEvent(input$run_gsea, {
-    req(values$fit, input$contrast_selector)
+    req(values$fit); req_nzchar(input$contrast_selector)
     ont <- input$gsea_ontology
     ont_label <- get_ont_label(ont)
 

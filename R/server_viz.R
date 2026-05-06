@@ -290,7 +290,15 @@ server_viz <- function(input, output, session, values, add_to_log, is_hf_space) 
         if (!dir.exists(d)) next
         gmaps <- list.files(d, pattern = "gene_map\\.tsv$", full.names = TRUE)
         if (length(gmaps) > 0) {
-          ncbi_gene_map <- tryCatch(read.delim(gmaps[1], stringsAsFactors = FALSE), error = function(e) NULL)
+          ncbi_gene_map <- tryCatch(
+            read.delim(gmaps[1], stringsAsFactors = FALSE),
+            error = function(e) {
+              showNotification(sprintf("Gene map '%s' is malformed (%s); DE table will show accessions instead of gene symbols.",
+                basename(gmaps[1]), e$message),
+                type = "warning", duration = 12)
+              message("[Grid] Gene map parse failed (", gmaps[1], "): ", e$message)
+              NULL
+            })
           if (!is.null(ncbi_gene_map) && nrow(ncbi_gene_map) > 0) {
             message("[Grid] Loaded gene map: ", gmaps[1], " (", nrow(ncbi_gene_map), " entries)")
             break
@@ -314,7 +322,15 @@ server_viz <- function(input, output, session, values, add_to_log, is_hf_space) 
             local_path <- file.path(tempdir(), basename(remote_path))
             dl <- scp_download(cfg, remote_path, local_path)
             if (dl$status == 0 && file.exists(local_path)) {
-              ncbi_gene_map <- tryCatch(read.delim(local_path, stringsAsFactors = FALSE), error = function(e) NULL)
+              ncbi_gene_map <- tryCatch(
+                read.delim(local_path, stringsAsFactors = FALSE),
+                error = function(e) {
+                  showNotification(sprintf("Downloaded gene map (%s) is malformed (%s); DE table will show accessions.",
+                    basename(local_path), e$message),
+                    type = "warning", duration = 12)
+                  message("[Grid] Downloaded gene map parse failed: ", e$message)
+                  NULL
+                })
               message("[Grid] Downloaded gene map via SSH: ", nrow(ncbi_gene_map), " entries")
             }
           }
@@ -1944,7 +1960,12 @@ server_viz <- function(input, output, session, values, add_to_log, is_hf_space) 
             if (!dir.exists(d)) next
             gmaps <- list.files(d, pattern = "gene_map\\.tsv$", full.names = TRUE)
             if (length(gmaps) > 0) {
-              export_gene_map <- tryCatch(read.delim(gmaps[1], stringsAsFactors = FALSE), error = function(e) NULL)
+              export_gene_map <- tryCatch(
+                read.delim(gmaps[1], stringsAsFactors = FALSE),
+                error = function(e) {
+                  message("[Export] Gene map '", gmaps[1], "' could not be parsed: ", e$message)
+                  NULL
+                })
               if (!is.null(export_gene_map) && nrow(export_gene_map) > 0) {
                 message("[Explorer Export] Loaded gene map: ", gmaps[1], " (", nrow(export_gene_map), " entries)")
                 break
@@ -1967,7 +1988,12 @@ server_viz <- function(input, output, session, values, add_to_log, is_hf_space) 
                 local_path <- file.path(tempdir(), basename(remote_path))
                 dl <- scp_download(cfg, remote_path, local_path)
                 if (dl$status == 0 && file.exists(local_path)) {
-                  export_gene_map <- tryCatch(read.delim(local_path, stringsAsFactors = FALSE), error = function(e) NULL)
+                  export_gene_map <- tryCatch(
+                    read.delim(local_path, stringsAsFactors = FALSE),
+                    error = function(e) {
+                      message("[Export] Downloaded gene map could not be parsed: ", e$message)
+                      NULL
+                    })
                   message("[Explorer Export] Downloaded gene map via SSH: ", nrow(export_gene_map), " entries")
                 }
               }

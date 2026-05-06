@@ -42,7 +42,7 @@ server_de <- function(input, output, session, values, add_to_log) {
 
   # --- volcano_data() reactive (app.R lines 805-830) ---
   volcano_data <- reactive({
-    req(values$fit, input$contrast_selector)
+    req(values$fit); req_nzchar(input$contrast_selector)
     df_raw <- topTable(values$fit, coef=input$contrast_selector, number=Inf) %>% as.data.frame()
     if (!"Protein.Group" %in% colnames(df_raw)) { df <- df_raw %>% rownames_to_column("Protein.Group") } else { df <- df_raw }
 
@@ -151,7 +151,7 @@ server_de <- function(input, output, session, values, add_to_log) {
     ))
   })
   output$heatmap_plot_fs <- renderPlot({
-    req(values$fit, values$y_protein, input$contrast_selector)
+    req(values$fit, values$y_protein); req_nzchar(input$contrast_selector)
     df_volc <- volcano_data(); prot_ids <- NULL
     if (!is.null(input$de_table_rows_selected)) {
       current_table_data <- df_volc
@@ -169,7 +169,7 @@ server_de <- function(input, output, session, values, add_to_log) {
 
   # --- DE Table (app.R lines 2474-2522) ---
   output$de_table <- renderDT({
-    req(values$fit, input$contrast_selector)
+    req(values$fit); req_nzchar(input$contrast_selector)
 
     # Build table data independently (not using volcano_data() to avoid reactive loops)
     df_raw <- topTable(values$fit, coef=input$contrast_selector, number=Inf) %>% as.data.frame()
@@ -257,7 +257,7 @@ server_de <- function(input, output, session, values, add_to_log) {
 
   # --- Heatmap Plot (app.R lines 2524-2533) ---
   output$heatmap_plot <- renderPlot({
-    req(values$fit, values$y_protein, input$contrast_selector)
+    req(values$fit, values$y_protein); req_nzchar(input$contrast_selector)
     df_volc <- volcano_data(); prot_ids <- NULL
     if (!is.null(input$de_table_rows_selected)) { current_table_data <- df_volc; if (!is.null(values$plot_selected_proteins)) current_table_data <- current_table_data %>% filter(Protein.Group %in% values$plot_selected_proteins); prot_ids <- current_table_data$Protein.Group[input$de_table_rows_selected]
     } else if (!is.null(values$plot_selected_proteins)) { prot_ids <- values$plot_selected_proteins; if(length(prot_ids) > 50) prot_ids <- head(prot_ids, 50)
@@ -284,7 +284,7 @@ server_de <- function(input, output, session, values, add_to_log) {
   # --- Consistent DE Table (app.R lines 2535-2550) ---
   # Shared reactive: CV data for all significant proteins in current contrast
   cv_analysis_data <- reactive({
-    req(values$fit, values$y_protein, input$contrast_selector, values$metadata)
+    req(values$fit, values$y_protein, values$metadata); req_nzchar(input$contrast_selector)
     df_res_raw <- topTable(values$fit, coef = input$contrast_selector, number = Inf) %>%
       as.data.frame() %>% filter(adj.P.Val < 0.05)
     if (!"Protein.Group" %in% colnames(df_res_raw)) {
@@ -723,7 +723,7 @@ server_de <- function(input, output, session, values, add_to_log) {
       paste0("Heatmap_", make.names(input$contrast_selector), ".png")
     },
     content = function(file) {
-      req(values$fit, values$y_protein, input$contrast_selector)
+      req(values$fit, values$y_protein); req_nzchar(input$contrast_selector)
       df_volc <- volcano_data(); prot_ids <- NULL
       if (!is.null(input$de_table_rows_selected)) {
         current_table_data <- df_volc
@@ -753,7 +753,7 @@ server_de <- function(input, output, session, values, add_to_log) {
       paste0("Heatmap_", make.names(input$contrast_selector), ".svg")
     },
     content = function(file) {
-      req(values$fit, values$y_protein, input$contrast_selector)
+      req(values$fit, values$y_protein); req_nzchar(input$contrast_selector)
       df_volc <- volcano_data(); prot_ids <- NULL
       if (!is.null(input$de_table_rows_selected)) {
         current_table_data <- df_volc
