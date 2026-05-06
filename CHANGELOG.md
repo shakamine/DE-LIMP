@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.12] — 2026-05-05
+
+### Fixed
+- **Reproducibility log (`Reproducibility_Code.R`) was hardcoded to DPC-Quant**: the `add_to_log("Run Pipeline (Main Analysis)", pipeline_code)` call always emitted `dpcCN()` / `dpcQuant()` / `dpcDE()` template strings regardless of which pipeline actually ran. So users who ran MaxLFQ + limma got a reproducibility log claiming they ran DPC-Quant — exactly the opposite of the file's purpose. Now branches on `input$pipeline_mode`: under MaxLFQ + limma, the log emits the actual code path (`arrow::open_dataset → filter → group_by/summarise → pivot_wider → log2 → limma::normalizeBetweenArrays → coverage filter → limma::lmFit`), with the user's actual Q-value / eQ / pgQ / coverage cutoffs substituted in. The DPC-Quant + experimental-override branch keeps the existing dpcDE template.
+
 ## [3.9.11] — 2026-05-05
 
 ### Fixed

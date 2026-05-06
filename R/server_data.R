@@ -475,13 +475,55 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
       cov_display_names <- c(cov_display_names, values$cov2_name %||% "Covariate2")
     }
 
-    # Generate pipeline code for reproducibility log
-    pipeline_code <- c(
-      "# Normalization & Quantification",
-      "dpcfit <- dpcCN(dat)",
-      "y_protein <- dpcQuant(dat, 'Protein.Group', dpc=dpcfit)",
-      ""
-    )
+    # Generate pipeline code for reproducibility log.
+    # Branch on the actual pipeline that's about to run so the log accurately
+    # reflects what R did (v3.9.12).
+    is_maxlfq_log <- (input$pipeline_mode %||% "dpc") == "maxlfq" &&
+                      !isTRUE(input$use_limpa_with_filter)
+    if (is_maxlfq_log) {
+      qc <- input$q_cutoff %||% 0.01
+      eqc <- input$eq_cutoff %||% 0
+      pgqc <- input$pgq_cutoff %||% 0
+      cov_pct <- 100 * (input$coverage_min_frac %||% 0.5)
+      pipeline_code <- c(
+        "# ─── MaxLFQ + limma pipeline (Moschem et al. 2025) ───",
+        "# DOI: 10.1021/acs.jproteome.5c00009",
+        "library(arrow); library(dplyr); library(tidyr); library(limma)",
+        "",
+        "# 1. Read parquet, apply FDR + QuantUMS filters lazily",
+        "rep <- arrow::open_dataset('report.parquet') %>%",
+        "  dplyr::select(Run, Protein.Group, PG.MaxLFQ,",
+        "                Q.Value, Lib.Q.Value, Lib.PG.Q.Value,",
+        "                Empirical.Quality, PG.MaxLFQ.Quality, Genes) %>%",
+        sprintf("  dplyr::filter(Q.Value <= %.3f, Lib.Q.Value <= %.3f, Lib.PG.Q.Value <= %.3f%s%s) %%>%%",
+                qc, qc, qc,
+                if (eqc > 0) sprintf(",\n                Empirical.Quality >= %.2f", eqc) else "",
+                if (pgqc > 0) sprintf(",\n                PG.MaxLFQ.Quality >= %.2f", pgqc) else ""),
+        "  dplyr::group_by(Protein.Group, Run) %>%",
+        "  dplyr::summarise(PG.MaxLFQ = max(PG.MaxLFQ, na.rm = TRUE), .groups = 'drop') %>%",
+        "  dplyr::collect()",
+        "",
+        "# 2. Pivot wide → log2 → quantile-normalize",
+        "wide <- rep %>% tidyr::pivot_wider(",
+        "  id_cols = Protein.Group, names_from = Run, values_from = PG.MaxLFQ)",
+        "E <- as.matrix(wide[, -1, drop = FALSE]); rownames(E) <- wide$Protein.Group",
+        "E[E <= 0 | !is.finite(E)] <- NA_real_",
+        "E <- log2(E)",
+        "E <- limma::normalizeBetweenArrays(E, method = 'quantile')",
+        "",
+        sprintf("# 3. Coverage filter — drop proteins with < %.0f%% non-NA samples", cov_pct),
+        sprintf("keep <- rowSums(!is.na(E)) >= ceiling(%.2f * ncol(E))", cov_pct / 100),
+        "E_fit <- E[keep, , drop = FALSE]",
+        ""
+      )
+    } else {
+      pipeline_code <- c(
+        "# Normalization & Quantification (DPC-Quant via limpa)",
+        "dpcfit <- dpcCN(dat)",
+        "y_protein <- dpcQuant(dat, 'Protein.Group', dpc=dpcfit)",
+        ""
+      )
+    }
 
     if (length(covariates_to_log) > 0) {
       # Log with covariates
@@ -565,7 +607,7 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
 
       pipeline_code <- c(pipeline_code, "",
         "# Differential Expression Model (with covariates)",
-        "fit <- dpcDE(y_protein, design, plot=FALSE)"
+        if (is_maxlfq_log) "fit <- limma::lmFit(E_fit, design)" else "fit <- dpcDE(y_protein, design, plot=FALSE)"
       )
     } else {
       # Log without covariates
@@ -581,7 +623,7 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
         "colnames(design) <- levels(groups)",
         "",
         "# Differential Expression Model",
-        "fit <- dpcDE(y_protein, design, plot=FALSE)"
+        if (is_maxlfq_log) "fit <- limma::lmFit(E_fit, design)" else "fit <- dpcDE(y_protein, design, plot=FALSE)"
       )
     }
 
