@@ -572,12 +572,10 @@ server_ai <- function(input, output, session, values) {
 
         # --- 7b2. Protein confidence (DPC-Quant n.observations + standard.error) ---
         # Skip under MaxLFQ — there's no DPC-Quant-equivalent SE matrix.
-        is_maxlfq_export <- isTRUE(values$y_protein$other$pipeline == "maxlfq") ||
-                             isTRUE(values$pipeline_mode_used == "maxlfq")
         tryCatch({
           n_obs <- values$y_protein$other$n.observations
           se_mat <- values$y_protein$other$standard.error
-          if (!is_maxlfq_export && !is.null(n_obs) && !is.null(se_mat)) {
+          if (!is_maxlfq(values$y_protein) && !is.null(n_obs) && !is.null(se_mat)) {
             conf_df <- data.frame(Protein.Group = rownames(n_obs), stringsAsFactors = FALSE)
             for (j in seq_len(ncol(n_obs))) {
               conf_df[[paste0("nObs_", colnames(n_obs)[j])]] <- n_obs[, j]
@@ -626,7 +624,7 @@ server_ai <- function(input, output, session, values) {
         # --- 7d. Detection matrix (per-protein precursor counts) ---
         # Skip under MaxLFQ — n.observations is a 0/1 mask there, not a precursor count.
         tryCatch({
-          if (!is_maxlfq_export && !is.null(values$raw_data) && !is.null(values$raw_data$E)) {
+          if (!is_maxlfq(values$y_protein) && !is.null(values$raw_data) && !is.null(values$raw_data$E)) {
             raw_mat <- values$raw_data$E
             raw_genes <- values$raw_data$genes
             if (!is.null(raw_genes) && "Protein.Group" %in% colnames(raw_genes)) {

@@ -744,7 +744,7 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
         # pipeline. Under DPC-Quant the matrix is `dat$E`; under MaxLFQ it's
         # `values$y_protein$E`. limma::lmFit matches by column position, so
         # this row order MUST match the matrix column order exactly.
-        sample_cols_used <- if (isTRUE(values$pipeline_mode_used == "maxlfq")) {
+        sample_cols_used <- if (is_maxlfq(values$y_protein)) {
           colnames(values$y_protein$E)
         } else {
           colnames(dat$E)
@@ -873,7 +873,7 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
                   group_sizes, collapse = ", "), ")")
         } else {
           tryCatch({
-            if (isTRUE(values$pipeline_mode_used == "maxlfq")) {
+            if (is_maxlfq(values$y_protein)) {
               # Paper-faithful MaxLFQ + limma path. Apply coverage filter
               # (UC Davis Bioinformatics Core's recommendation, also reviewer
               # request HIGH #4) so eBayes isn't moderating against rows with

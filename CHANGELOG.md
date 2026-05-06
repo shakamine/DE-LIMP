@@ -5,6 +5,20 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.18] — 2026-05-06
+
+### Changed (v3.10.0 prep — sweep `values$pipeline_mode_used` reads to `is_maxlfq()`)
+- **11 read sites swept** to use the canonical `is_maxlfq(values$y_protein)` accessor (added v3.9.17) instead of the volatile `values$pipeline_mode_used` reactiveVal:
+  - `R/server_data.R` × 2 — meta-alignment branch + lmFit-vs-dpcDE branch
+  - `R/server_session.R` × 2 — methods text branch + protein_confidence export guard
+  - `R/server_ai.R` × 3 — protein_confidence + detection_matrix export guards
+  - `R/server_qc.R` × 4 — Norm QC plot branch + filter waterfall visibility + stacked-bar title + stacked-bar legend label
+  - `R/server_de.R` × 1 — On/Off table empty-state message
+- The accessor reads from `y_protein$other$descriptor$pipeline_id` (durable) with legacy fallback to `y_protein$other$pipeline` and a final fallback to "DPC-Quant" for very old session.rds files. Adding a third pipeline (e.g. DDA) now requires editing zero of these files.
+- Local boolean variables named `is_maxlfq` were removed where they shadowed the helper of the same name; call sites now invoke `is_maxlfq(values$y_protein)` inline.
+
+`values$pipeline_mode_used` is still set during run_pipeline (back-compat for in-flight sessions) but no longer read except internally by `pipeline_descriptor()` as a fallback. Final removal in v3.10.0 after `server_comparator.R` is swept.
+
 ## [3.9.17] — 2026-05-06
 
 ### Added (v3.10.0 prep — single source of truth for pipeline metadata)

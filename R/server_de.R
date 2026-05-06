@@ -843,7 +843,7 @@ server_de <- function(input, output, session, values, add_to_log) {
   output$onoff_table <- DT::renderDT({
     df <- onoff_data()
     if (is.null(df) || nrow(df) == 0) {
-      empty_msg <- if (!isTRUE(values$pipeline_mode_used == "maxlfq"))
+      empty_msg <- if (!is_maxlfq(values$y_protein))
         "No on/off proteins under DPC-Quant — its missing-data model fills these in. Switch to MaxLFQ + limma to see qualitative on/off calls."
       else
         sprintf("No proteins detected in ≥ %d samples of one group AND zero in the other.",

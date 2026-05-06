@@ -412,8 +412,7 @@ server_qc <- function(input, output, session, values) {
 
     # MaxLFQ pipeline: compare pre-quantile-norm log2(PG.MaxLFQ) vs post-norm matrix.
     # DPC-Quant pipeline: keep the historical view (DIA-NN precursor input vs DPC-Quant output).
-    is_maxlfq <- isTRUE(values$pipeline_mode_used == "maxlfq")
-    if (is_maxlfq) {
+    if (is_maxlfq(values$y_protein)) {
       pre_mat  <- values$y_protein$other$E_log2_raw
       post_mat <- values$y_protein$E
       pre_label  <- "Pre-norm log2(PG.MaxLFQ)"
@@ -1849,7 +1848,7 @@ server_qc <- function(input, output, session, values) {
 
   # MaxLFQ filter waterfall — visible only when the MaxLFQ pipeline ran.
   output$maxlfq_filter_summary <- renderUI({
-    if (!isTRUE(values$pipeline_mode_used == "maxlfq")) return(NULL)
+    if (!is_maxlfq(values$y_protein)) return(NULL)
     fc <- values$y_protein$other$filter_counts
     if (is.null(fc) || is.null(fc$input)) return(NULL)
     fmt <- function(x) if (is.null(x) || is.na(x)) "—" else format(x, big.mark = ",")
@@ -1905,7 +1904,7 @@ server_qc <- function(input, output, session, values) {
   # filled in by the probability model) and "Detected vs Missing" (MaxLFQ —
   # missing means actually missing).
   output$completeness_stacked_bar_title <- renderUI({
-    txt <- if (isTRUE(values$pipeline_mode_used == "maxlfq"))
+    txt <- if (is_maxlfq(values$y_protein))
       "Detected vs Missing Proteins per Sample"
     else
       "Detected vs Inferred Proteins per Sample"
@@ -1916,8 +1915,7 @@ server_qc <- function(input, output, session, values) {
   output$completeness_stacked_bar <- renderPlotly({
     cd <- completeness_data()
     req(cd)
-    is_maxlfq <- isTRUE(values$pipeline_mode_used == "maxlfq")
-    inferred_label <- if (is_maxlfq) "Missing" else "Inferred"
+    inferred_label <- if (is_maxlfq(values$y_protein)) "Missing" else "Inferred"
 
     df <- data.frame(
       Sample = names(cd$detected_count),
