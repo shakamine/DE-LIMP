@@ -2,6 +2,54 @@
 #  HELPER FUNCTIONS — General utilities
 # ==============================================================================
 
+# --- safe_section: wraps an export sub-step so silent failures become visible
+# Replaces the dozens of `tryCatch(error = function(e) NULL)` blocks scattered
+# through claude_export_content / Complete export. Each safe_section call
+# either records a successful section or appends a "SKIPPED" line to a
+# manifest the export bundles into the ZIP root, so reviewers can see what's
+# missing and why instead of being silently shipped a 9-file ZIP that should
+# have had 12 files.
+#
+# Usage:
+#   manifest <- new.env(parent = emptyenv()); manifest$lines <- character(0)
+#   safe_section(manifest, "QC stats CSV", {
+#     write.csv(qc_df, file = qc_file, row.names = FALSE)
+#     files_to_zip <- c(files_to_zip, qc_file)   # caller maintains this
+#   })
+#   # ...then later, write the manifest:
+#   writeLines(c("DE-LIMP export manifest", manifest$lines),
+#              file.path(tmp_dir, "MANIFEST.txt"))
+#
+# Returns: TRUE on success, FALSE on caught failure (after appending to manifest).
+safe_section <- function(manifest, name, expr) {
+  start <- Sys.time()
+  ok <- tryCatch({
+    force(expr)
+    elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
+    manifest$lines <- c(manifest$lines,
+      sprintf("[OK]      %-50s (%.1fs)", name, elapsed))
+    TRUE
+  }, error = function(e) {
+    msg <- conditionMessage(e)
+    if (nchar(msg) > 200) msg <- paste0(substr(msg, 1, 197), "...")
+    manifest$lines <- c(manifest$lines,
+      sprintf("[SKIPPED] %-50s -- %s", name, msg))
+    message(sprintf("[DE-LIMP] safe_section '%s' failed: %s", name, msg))
+    FALSE
+  })
+  invisible(ok)
+}
+
+# --- req_nzchar: like req() but treats "" as missing
+# Standard Shiny req() considers "" truthy for character inputs, which means
+# downstream code happily runs with empty strings and produces nonsense
+# (limma::topTable(fit, coef = "") errors deep in the call stack). Use this
+# whenever an input must be a non-empty character.
+req_nzchar <- function(...) {
+  args <- list(...)
+  for (a in args) shiny::req(!is.null(a) && length(a) > 0 && nzchar(as.character(a)))
+}
+
 # --- Covariate coercion for the DE design matrix ---------------------------
 #
 # Decide whether a metadata column should enter the design matrix as a

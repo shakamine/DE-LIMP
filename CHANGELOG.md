@@ -5,6 +5,16 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.14] — 2026-05-05
+
+### Added
+- **`safe_section(manifest, name, expr)` helper in `R/helpers.R`**: replaces the dozens of `tryCatch(error = function(e) NULL)` blocks in export bundlers with a manifest-aware wrapper. On success records `[OK] <name>`; on failure records `[SKIPPED] <name> -- <reason>` to a `MANIFEST.txt` written into the ZIP root. Reviewers can see what's missing and why instead of being silently shipped a 9-file ZIP that should have had 12 files. (Wiring into `claude_export_content` and the Complete export comes in v3.9.15 — this commit only adds the helper + the architectural rules so future code is held to them.)
+- **`req_nzchar(...)` helper**: like `shiny::req()` but treats `""` as missing, so empty selectInputs / textInputs don't slip through into `topTable(fit, coef = "")` and similar deep failures.
+
+### Changed
+- **CLAUDE.md gains an "Architectural rules" section** codifying the 4 root-cause patterns from the critic audit (no hardcoded pipeline descriptions, tag `%||%` defaults in user-facing text, one definition per concept, silent catch is banned in export paths). The rules exist because all four were violated in early DE-LIMP and produced misleading exports for real analyses.
+- **Persistent memory entry** added (`feedback_no_hardcoded_pipeline_descriptions.md`) so future sessions surface the same rules at startup.
+
 ## [3.9.13] — 2026-05-05
 
 ### Added

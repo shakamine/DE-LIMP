@@ -6,6 +6,24 @@
 - **Document as you go**: When the user says "wrap up", "good night", "that's it for now", or asks for a summary — update CLAUDE.md and CHANGELOG.md with all changes from the current work before responding
 - **Bump the patch version after every user-visible fix**: After every fix or small feature, bump (a) the `VERSION` file, (b) the `# Version:` line in the `app.R` header comment, and (c) add a CHANGELOG entry under that new version section. (a) drives the runtime banner in the RStudio console; (b) is what the user sees by just opening `app.R` in the editor without running it. Keep them in sync.
 
+## Architectural rules (NEVER violate — discovered the hard way in v3.9.x)
+
+These four rules exist because all of them were violated in early DE-LIMP and produced wrong-but-plausible exports that misled real analyses. Whenever you're about to write code that touches user-facing exports, methods text, AI prompts, info modals, or reproducibility logs — stop and check this list.
+
+1. **Pipeline objects must self-describe — never hardcode a description of "what we did".**
+   The MaxLFQ + limma pipeline (v3.9.0) was added as a parallel branch to the historic DPC-Quant pipeline. Methods text, Claude/AI exports, Comparator AI prompts, and the Reproducibility log all hardcoded `"DPC-CN... DPC-Quant... dpcDE()"` strings regardless of which pipeline ran. Real users got reports describing the wrong pipeline. The fix: every quantification path returns a self-describing object whose downstream consumers read `$pipeline_id`, `$methods_paragraph`, `$rollup_method` from. Never write `if (isTRUE(values$pipeline_mode_used == "maxlfq")) ...` in a new file. If you find yourself wanting to, the right fix is to put that branch in a single helper. Adding a third pipeline (DDA path is in flight) must require zero edits to downstream files.
+
+2. **`%||%` defaults that flow into user-facing text must be tagged.**
+   The Comparator's settings diff has a long chain of `coalesce_setting(..., "0.05")` / `%||% "0.6"` calls that fabricate plausible-looking values when the upstream field is `NULL`. A reviewer reading the AI prompt sees `"FDR threshold: 0.05"` and assumes the user set 0.05 — but the value was unrecorded and a hardcoded default got stamped in. **Rule:** for any value that ends up in an export / AI prompt / methods string, either render `(DEFAULT — not user-confirmed)` next to it, or replace the `%||%` with `NA_character_` and have the prompt-builder skip the line. Never silently substitute fabricated values for missing user input.
+
+3. **Concepts have one definition.**
+   "Detected vs Inferred" had four independent classifiers across `server_qc.R`, `server_viz.R`, `server_de.R`, `helpers.R` and the same fix had to be applied 5 times for v3.9.x. Covariate display name (`values$cov1_name %||% "Covariate1"`) is read 22 different times — renaming Covariate1 → Year touches 22 lines instead of 1. **Rule:** every shared concept (detection status, pipeline label, covariate display name, DIA-NN defaults, classifier rules) lives in exactly **one** file as a function/constant, imported elsewhere. If you find yourself copying logic to a second site, refactor instead.
+
+4. **Silent catch is banned in export paths.**
+   `tryCatch(error = function(e) NULL)` around CSV writes / ZIP entries means a downstream user receives an export ZIP missing entire sections (instrument metadata, QC, phospho summary) and has no idea. **Rule:** in every multi-file export bundler use `safe_section(manifest, name, expr)` from `R/helpers.R`. On success it records `[OK]`; on failure it records `[SKIPPED] <name> -- <reason>` to a `MANIFEST.txt` written into the ZIP root. The user reading the export downstream sees what's missing and why. If you write a new tryCatch with `error = function(e) NULL` in any export path, you owe the next reviewer an explanation — and it had better not just be "graceful degradation."
+
+When reviewing your own changes against these rules: ask yourself whether the export still describes the analysis correctly under every pipeline + every input shape. If you can't answer "yes" with certainty, branch the code or add a test before shipping.
+
 ## Review Agents (spawn before major releases)
 After significant changes, spawn these 5 review agents in parallel:
 1. **Biological researcher** — workflow intuitiveness, jargon, missing biology features (non-bioinformatician perspective)
