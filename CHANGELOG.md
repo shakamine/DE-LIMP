@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.23] — 2026-05-07
+
+### Fixed
+- **`dotnet-install.sh --version 8.0` was the wrong flag** — `--version` expects an exact version like `8.0.11`; the script tried to fetch `dotnet-runtime-8.0-linux-x64.tar.gz` (literal "8.0" in the filename), got 404 from both primary and secondary CDN URLs, and aborted with `Could not find .NET Core Runtime with version = 8.0`. For "latest 8.x release" the correct flag is `--channel 8.0`. Brett caught this when v3.10.22 finally got the install path to actually fire on his Ubuntu 26.04 box (after the v3.10.21/22 dispatch fixes) — first real attempt revealed the .NET install command itself was wrong.
+
 ## [3.10.22] — 2026-05-07
 
 ### Fixed

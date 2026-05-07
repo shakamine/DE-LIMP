@@ -311,7 +311,10 @@ install_dotnet8_runtime() {
     local installer="/tmp/dotnet-install.sh"
     if curl -sSL https://dot.net/v1/dotnet-install.sh -o "${installer}"; then
         chmod +x "${installer}"
-        sudo "${installer}" --runtime dotnet --version "8.0" \
+        # v3.10.23 — `--version 8.0` is wrong (it's interpreted as the
+        # literal filename `dotnet-runtime-8.0-linux-x64.tar.gz`, which
+        # doesn't exist). Use `--channel 8.0` for "latest 8.x release."
+        sudo "${installer}" --runtime dotnet --channel "8.0" \
             --install-dir /usr/share/dotnet
         sudo ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
         rm -f "${installer}"
