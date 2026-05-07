@@ -5,6 +5,13 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.21] — 2026-05-07
+
+### Fixed
+- **`sync_repo` was never called on subsequent runs in `auto` mode** — the gate `if [ ! -d "${REPO_DIR}/.git" ]; then sync_repo; fi` meant the WSL-side clone only got cloned on first install, and was never `git pull`'d again. Users who ran the launcher repeatedly stayed on whatever code was current when they FIRST installed, even with the host-side `git pull` working. Brett saw v3.10.16 stuck in the app banner across 4+ launcher runs while origin was at v3.10.20. Removed the gate — `sync_repo()` is now called every run; it handles both the clone-fresh and pull-existing cases internally.
+- **`verify_diann_runtime()` was never called on subsequent runs** — was nested inside `install_diann()`, only running on the rare runs that re-installed DIA-NN (i.e. `! -x diann-linux && ! -f license_flag`). Hoisted both `install_dotnet8_runtime` and `verify_diann_runtime` to top-level functions. Verification now runs (a) at the end of `install_diann()` after the binary download, and (b) separately on every auto-mode launch when DIA-NN is already installed. Result: silent .NET / RawFileReader drift (e.g. dotnet upgraded out of 8.x, DIA-NN reinstalled without RawFileReader DLLs) gets caught immediately on the next launch instead of failing during a real search.
+- **`verify_diann_runtime` was called BEFORE the DIA-NN binary was downloaded** — would always fail on first install. Moved the call to the end of `install_diann()` after the extract step.
+
 ## [3.10.20] — 2026-05-07
 
 ### Fixed

@@ -266,6 +266,113 @@ install_system_deps() {
 #
 # License: DIA-NN is free for academic use but proprietary. Users must
 # agree to terms at https://github.com/vdemichev/DiaNN/blob/master/LICENSE.md
+
+# v3.10.21 — install_dotnet8_runtime and verify_diann_runtime are now
+# top-level functions (were previously nested inside install_diann()
+# which made them uncallable from elsewhere). Hoisting also lets
+# verify_diann_runtime() run on every launcher invocation, not just
+# first install — so silent .NET drift on existing setups gets caught.
+
+install_dotnet8_runtime() {
+    # Tier 1: already installed at version 8.x?
+    if command -v dotnet >/dev/null 2>&1; then
+        local v="$(dotnet --list-runtimes 2>/dev/null | grep -E 'Microsoft\.NETCore\.App 8\.' | head -1)"
+        if [ -n "${v}" ]; then
+            log ".NET 8 runtime already installed: ${v}"
+            return 0
+        fi
+        warn "dotnet command exists but no 8.x runtime — DIA-NN's .raw reader needs 8.x. Installing..."
+    fi
+    # Tier 2: apt with multiple package-name candidates (naming has shifted)
+    for pkg in dotnet-runtime-8.0 dotnet-runtime-8 dotnet8; do
+        if apt-cache show "${pkg}" >/dev/null 2>&1; then
+            log "Installing ${pkg} from default apt..."
+            if sudo apt-get install -y "${pkg}"; then return 0; fi
+        fi
+    done
+    # Tier 3: Microsoft apt repo + same sweep
+    log "Default apt has no dotnet 8 runtime — adding Microsoft repo..."
+    local urel="$(lsb_release -rs)"
+    if wget -q "https://packages.microsoft.com/config/ubuntu/${urel}/packages-microsoft-prod.deb" \
+            -O /tmp/packages-microsoft-prod.deb; then
+        sudo dpkg -i /tmp/packages-microsoft-prod.deb >/dev/null 2>&1 || true
+        rm -f /tmp/packages-microsoft-prod.deb
+        sudo apt-get update -qq || true
+        for pkg in dotnet-runtime-8.0 dotnet-runtime-8 dotnet8; do
+            if apt-cache show "${pkg}" >/dev/null 2>&1; then
+                log "Installing ${pkg} from Microsoft apt..."
+                if sudo apt-get install -y "${pkg}"; then return 0; fi
+            fi
+        done
+        warn "Microsoft repo for Ubuntu ${urel} has no dotnet-runtime-8 yet (likely too-new Ubuntu)."
+    fi
+    # Tier 4: Microsoft's official dotnet-install.sh
+    log "Falling back to Microsoft's official dotnet-install.sh..."
+    local installer="/tmp/dotnet-install.sh"
+    if curl -sSL https://dot.net/v1/dotnet-install.sh -o "${installer}"; then
+        chmod +x "${installer}"
+        sudo "${installer}" --runtime dotnet --version "8.0" \
+            --install-dir /usr/share/dotnet
+        sudo ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+        rm -f "${installer}"
+        if command -v dotnet >/dev/null 2>&1 && \
+           dotnet --list-runtimes 2>/dev/null | grep -qE 'Microsoft\.NETCore\.App 8\.'; then
+            log ".NET 8 runtime installed via dotnet-install.sh"
+            return 0
+        fi
+    fi
+    err ".NET 8 runtime install FAILED at all four tiers."
+    err "DIA-NN's Thermo .raw reader requires .NET 8 — searches will fail with 'No MS2 spectra: aborting'."
+    return 1
+}
+
+verify_diann_runtime() {
+    local ok=1
+    if ! command -v dotnet >/dev/null 2>&1; then
+        err "  ✗ dotnet command not on PATH"; ok=0
+    elif ! dotnet --list-runtimes 2>/dev/null | grep -qE 'Microsoft\.NETCore\.App 8\.'; then
+        err "  ✗ dotnet on PATH but no 8.x runtime registered"
+        err "    Found: $(dotnet --list-runtimes 2>&1 | head -3)"
+        ok=0
+    else
+        log "  ✓ .NET 8 runtime on PATH"
+    fi
+    if [ ! -x "${DIANN_DIR}/diann-linux" ]; then
+        err "  ✗ diann-linux not found at ${DIANN_DIR}/diann-linux"; ok=0
+    else
+        log "  ✓ DIA-NN binary at ${DIANN_DIR}/diann-linux"
+    fi
+    local n_raw_dll
+    n_raw_dll=$(find "${DIANN_DIR}" -maxdepth 2 -name '*RawFileReader*' 2>/dev/null | wc -l)
+    if [ "${n_raw_dll}" -lt 1 ]; then
+        err "  ✗ No RawFileReader DLLs in ${DIANN_DIR}"
+        err "    Thermo .raw files will fail with 'No MS2 spectra: aborting'."
+        ok=0
+    else
+        log "  ✓ RawFileReader DLLs present (${n_raw_dll} files)"
+    fi
+    if [ "${ok}" = "1" ]; then
+        local smoke
+        smoke=$("${DIANN_DIR}/diann-linux" --help 2>&1 | head -1 || true)
+        if [ -z "${smoke}" ]; then
+            err "  ✗ diann-linux --help produced no output (binary or .NET broken)"
+            ok=0
+        else
+            log "  ✓ diann-linux runs: ${smoke}"
+        fi
+    fi
+    if [ "${ok}" != "1" ]; then
+        err ""
+        err "  DIA-NN runtime verification FAILED."
+        err "  This is the bug class behind 'No MS2 spectra: aborting' errors."
+        err "  Fix the issues above before submitting a search."
+        err ""
+        return 1
+    fi
+    log "DIA-NN runtime verified — Thermo .raw reading should work."
+    return 0
+}
+
 install_diann() {
     # License check — write a flag file once user agrees, skip on subsequent runs
     if [ ! -f "${DIANN_LICENSE_FLAG}" ]; then
@@ -290,144 +397,13 @@ install_diann() {
         date > "${DIANN_LICENSE_FLAG}"
     fi
 
-    # .NET 8 runtime — needed by DIA-NN's RawFileReader for Thermo .raw files.
-    # If this is missing or wrong-version, DIA-NN library prediction works
-    # (pure C++) but raw file reading fails with "No MS2 spectra: aborting"
-    # — exactly the bug a community user hit on Ubuntu 26.04 (v3.10.18).
-    #
-    # v3.10.18 — robust multi-tier install:
-    #   Tier 1: detect existing dotnet 8.x and skip
-    #   Tier 2: apt with multiple package names (dotnet-runtime-8.0,
-    #           dotnet-runtime-8, dotnet8) — covers Ubuntu 22.04, 24.04,
-    #           naming changes, etc.
-    #   Tier 3: Microsoft's apt repo + the same package-name sweep
-    #   Tier 4: Microsoft's official dotnet-install.sh — always works
-    #           regardless of distro/version, but installs to /usr/share/dotnet
-    #           outside apt. Used when Ubuntu version is too new (e.g. 26.04
-    #           released April 2026) for Microsoft's channel to have caught up.
-    install_dotnet8_runtime() {
-        # 1. Already installed at version 8.x?
-        if command -v dotnet >/dev/null 2>&1; then
-            local v="$(dotnet --list-runtimes 2>/dev/null | grep -E 'Microsoft\.NETCore\.App 8\.' | head -1)"
-            if [ -n "${v}" ]; then
-                log ".NET 8 runtime already installed: ${v}"
-                return 0
-            fi
-            warn "dotnet command exists but no 8.x runtime — DIA-NN's .raw reader needs 8.x. Installing..."
-        fi
-
-        # 2. apt with multiple package-name candidates (Ubuntu naming has shifted)
-        for pkg in dotnet-runtime-8.0 dotnet-runtime-8 dotnet8; do
-            if apt-cache show "${pkg}" >/dev/null 2>&1; then
-                log "Installing ${pkg} from default apt..."
-                if sudo apt-get install -y "${pkg}"; then return 0; fi
-            fi
-        done
-
-        # 3. Microsoft's apt repo + same sweep
-        log "Default apt has no dotnet 8 runtime — adding Microsoft repo..."
-        local urel="$(lsb_release -rs)"
-        if wget -q "https://packages.microsoft.com/config/ubuntu/${urel}/packages-microsoft-prod.deb" \
-                -O /tmp/packages-microsoft-prod.deb; then
-            sudo dpkg -i /tmp/packages-microsoft-prod.deb >/dev/null 2>&1 || true
-            rm -f /tmp/packages-microsoft-prod.deb
-            sudo apt-get update -qq || true
-            for pkg in dotnet-runtime-8.0 dotnet-runtime-8 dotnet8; do
-                if apt-cache show "${pkg}" >/dev/null 2>&1; then
-                    log "Installing ${pkg} from Microsoft apt..."
-                    if sudo apt-get install -y "${pkg}"; then return 0; fi
-                fi
-            done
-            warn "Microsoft repo for Ubuntu ${urel} has no dotnet-runtime-8 yet (likely a too-new Ubuntu)."
-        fi
-
-        # 4. Last-resort: Microsoft's official dotnet-install.sh — works on any
-        #    Linux distro/version. Installs to /usr/share/dotnet so DIA-NN
-        #    finds it (DOTNET_ROOT env or PATH). Slow (~150 MB download).
-        log "Falling back to Microsoft's official dotnet-install.sh..."
-        local installer="/tmp/dotnet-install.sh"
-        if curl -sSL https://dot.net/v1/dotnet-install.sh -o "${installer}"; then
-            chmod +x "${installer}"
-            sudo "${installer}" --runtime dotnet --version "8.0" \
-                --install-dir /usr/share/dotnet
-            sudo ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
-            rm -f "${installer}"
-            if command -v dotnet >/dev/null 2>&1 && \
-               dotnet --list-runtimes 2>/dev/null | grep -qE 'Microsoft\.NETCore\.App 8\.'; then
-                log ".NET 8 runtime installed via dotnet-install.sh"
-                return 0
-            fi
-        fi
-
-        err ".NET 8 runtime install FAILED at all four tiers (apt default, Microsoft apt, dotnet-install.sh)."
-        err "DIA-NN's Thermo .raw reader requires .NET 8 — searches will fail with 'No MS2 spectra: aborting'."
-        err "Manual fix: install .NET 8 runtime via your distribution's docs, then re-run this script."
-        return 1
-    }
-
+    # v3.10.21 — top-level helpers do the heavy lifting; this just calls them.
+    # `install_dotnet8_runtime` ensures .NET 8 is present (needed for Thermo
+    # .raw reading via RawFileReader). Verification runs at the END of
+    # install_diann() — AFTER the binary is downloaded — so the smoke-test
+    # `diann-linux --help` can actually execute.
     log "Installing .NET 8 runtime..."
     install_dotnet8_runtime
-
-    # v3.10.19 — verify .NET 8 + DIA-NN can ACTUALLY load Thermo .raw.
-    # Without this, the install reports "Done" but a real search fails
-    # 5+ minutes in with "No MS2 spectra: aborting" — the community user's
-    # bug. We don't have a real .raw file to probe, but we can at least
-    # confirm dotnet 8.x is on PATH and DIA-NN's RawFileReader.dll is
-    # present in the install dir. Both are necessary preconditions.
-    verify_diann_runtime() {
-        local ok=1
-        # 1. dotnet 8.x present
-        if ! command -v dotnet >/dev/null 2>&1; then
-            err "  ✗ dotnet command not on PATH after install"; ok=0
-        elif ! dotnet --list-runtimes 2>/dev/null | grep -qE 'Microsoft\.NETCore\.App 8\.'; then
-            err "  ✗ dotnet on PATH but no 8.x runtime registered"
-            err "    Found: $(dotnet --list-runtimes 2>&1 | head -3)"
-            ok=0
-        else
-            log "  ✓ .NET 8 runtime on PATH"
-        fi
-        # 2. DIA-NN binary present
-        if [ ! -x "${DIANN_DIR}/diann-linux" ]; then
-            err "  ✗ diann-linux not found at ${DIANN_DIR}/diann-linux"; ok=0
-        else
-            log "  ✓ DIA-NN binary at ${DIANN_DIR}/diann-linux"
-        fi
-        # 3. RawFileReader DLLs bundled (DIA-NN needs these for Thermo .raw)
-        local n_raw_dll
-        n_raw_dll=$(find "${DIANN_DIR}" -maxdepth 2 -name '*RawFileReader*' 2>/dev/null | wc -l)
-        if [ "${n_raw_dll}" -lt 1 ]; then
-            err "  ✗ No RawFileReader DLLs in ${DIANN_DIR}"
-            err "    Thermo .raw files will fail with 'No MS2 spectra: aborting'."
-            err "    The DIA-NN extraction may have been incomplete."
-            ok=0
-        else
-            log "  ✓ RawFileReader DLLs present (${n_raw_dll} files)"
-        fi
-        # 4. Quick smoke test: DIA-NN starts without crashing
-        if [ "${ok}" = "1" ]; then
-            local smoke
-            smoke=$("${DIANN_DIR}/diann-linux" --help 2>&1 | head -1 || true)
-            if [ -z "${smoke}" ]; then
-                err "  ✗ diann-linux --help produced no output (binary or .NET broken)"
-                ok=0
-            else
-                log "  ✓ diann-linux runs: ${smoke}"
-            fi
-        fi
-        if [ "${ok}" != "1" ]; then
-            err ""
-            err "  DIA-NN runtime verification FAILED."
-            err "  This is the bug class behind 'No MS2 spectra: aborting'"
-            err "  errors during searches. Fix the issues above before submitting"
-            err "  a search, or DIA-NN will fail to read Thermo .raw files."
-            err ""
-            return 1
-        fi
-        log "DIA-NN runtime verified — Thermo .raw reading should work."
-        return 0
-    }
-
-    verify_diann_runtime
 
     # Resolve the version to download. "latest" triggers an API lookup for the
     # newest non-Preview Linux zip; anything else is treated as an explicit
@@ -487,12 +463,11 @@ export LD_LIBRARY_PATH="${DIANN_DIR}:\${LD_LIBRARY_PATH}"
 export PATH="\${HOME}/.local/bin:\${PATH}"
 EOF
 
-    # Sanity check
-    if "${DIANN_DIR}/diann-linux" --help >/dev/null 2>&1; then
-        ok "DIA-NN installed: $(${DIANN_DIR}/diann-linux --help 2>&1 | head -1)"
-    else
-        warn "DIA-NN installed but --help failed. Try running ${DIANN_DIR}/diann-linux --help manually to see the error."
-    fi
+    # v3.10.21 — full runtime verification (.NET 8 + binary + RawFileReader
+    # DLLs + smoke test). Runs at the END of install_diann() so the binary
+    # is already in place. Aborts if anything's broken so users discover
+    # the problem at install time, not 5 minutes into a real search.
+    verify_diann_runtime
 }
 
 # -----------------------------------------------------------------------------
@@ -715,17 +690,34 @@ case "${CMD}" in
         # an older R install would otherwise never get it.
         install_system_deps
 
-        if [ ! -d "${REPO_DIR}/.git" ]; then
-            sync_repo
-        fi
+        # v3.10.21 — always sync_repo in auto mode, not just on first
+        # install. Previously the gate `if [ ! -d "${REPO_DIR}/.git" ]`
+        # meant updates NEVER landed on subsequent runs — users were
+        # silently running stale code (e.g. v3.10.16 pinned for days
+        # while origin/main moved past v3.10.20). sync_repo() itself
+        # handles both clone-fresh and pull-existing cases.
+        sync_repo
+
         # Re-run R package install if key markers are missing. limpa is the
         # most fragile (source compile, Bioc); shiny is the quickest-to-fail
         # marker for missing system libs (libuv).
         if [ ! -d "${R_LIB}/limpa" ] || [ ! -d "${R_LIB}/shiny" ]; then
             install_r_packages
         fi
+
+        # v3.10.21 — always run DIA-NN runtime verification, even when
+        # install_diann() is otherwise skipped. Old gate ran install_diann()
+        # only on first install; v3.10.19's verify_diann_runtime was inside
+        # install_diann(), so on subsequent runs verification was silently
+        # skipped — defeating the whole "catch broken .NET at install time"
+        # safety net. Now: install_diann() runs only when the binary is
+        # missing (the expensive download); verify_diann_runtime() runs
+        # every time (cheap, ~50ms) so users get loud feedback if their
+        # .NET / DIA-NN install ever drifts out of working state.
         if [ ! -x "${DIANN_DIR}/diann-linux" ] && [ ! -f "${DIANN_LICENSE_FLAG}" ]; then
             install_diann
+        elif [ -x "${DIANN_DIR}/diann-linux" ]; then
+            verify_diann_runtime || warn "DIA-NN runtime verification failed — searches may not work."
         fi
         run_app
         ;;
