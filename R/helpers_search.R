@@ -261,16 +261,27 @@ download_uniprot_fasta_rest_fallback <- function(proteome_id, output_path) {
   })
 }
 
-#' Translate local mount paths to HPC paths and vice versa
-#' Handles: /Volumes/proteomics-grp/ <-> /quobyte/proteomics-grp/
+#' Translate local mount paths to HPC paths and vice versa.
+#' v3.10.15 — reads the `storage_local` / `storage_hpc` prefixes from the
+#' site config (defaults preserve UCD's `/Volumes/proteomics-grp/` <->
+#' `/quobyte/proteomics-grp/` mapping; non-UCD sites override via env or
+#' `~/.delimp_site.yaml`).
 #' @param path Character path to translate
 #' @param to Character: "hpc" or "local"
-#' @return Translated path
+#' @return Translated path (or unchanged if no prefix matches)
 translate_storage_path <- function(path, to = "hpc") {
+  cfg <- delimp_site()
+  local_prefix <- cfg$storage_local
+  hpc_prefix   <- cfg$storage_hpc
+  # Both must be non-empty to translate. Treat trailing "/" as part of the
+  # match so we don't double-slash on output.
+  if (!nzchar(local_prefix) || !nzchar(hpc_prefix)) return(path)
+  esc_local <- paste0("^", gsub("([][.\\?*+(){}^$|])", "\\\\\\1", local_prefix))
+  esc_hpc   <- paste0("^", gsub("([][.\\?*+(){}^$|])", "\\\\\\1", hpc_prefix))
   if (to == "hpc") {
-    path <- gsub("^/Volumes/proteomics-grp/", "/quobyte/proteomics-grp/", path)
+    path <- sub(esc_local, hpc_prefix, path)
   } else {
-    path <- gsub("^/quobyte/proteomics-grp/", "/Volumes/proteomics-grp/", path)
+    path <- sub(esc_hpc, local_prefix, path)
   }
   path
 }
@@ -3383,20 +3394,21 @@ select_best_partition <- function(lab_resources, public_resources, peak_cpus = 6
     sprintf("Group: %d/%d CPUs", group_used, group_limit)
   } else "no limit info"
 
+  # v3.10.15 \u2014 pull primary/fallback from site config (UCD defaults preserved).
+  cfg <- delimp_site()
+  primary  <- list(account = cfg$slurm_account,           partition = cfg$slurm_partition)
+  fallback <- list(account = cfg$slurm_fallback_account,  partition = cfg$slurm_fallback_partition)
+
   if (has_capacity) {
-    list(account = "genome-center-grp", partition = "high",
-         reason = sprintf("%s (%d available)", limit_label, effective_available))
+    c(primary, list(reason = sprintf("%s (%d available)", limit_label, effective_available)))
   } else if (at_limit && pub_has_idle) {
-    list(account = "publicgrp", partition = "low",
-         reason = sprintf("%s \u2014 at capacity. Public has %d idle CPUs, faster start",
-                          limit_label, pub_idle))
+    c(fallback, list(reason = sprintf("%s \u2014 at capacity. Fallback has %d idle CPUs, faster start",
+                                       limit_label, pub_idle)))
   } else if (at_limit) {
-    list(account = "genome-center-grp", partition = "high",
-         reason = sprintf("%s \u2014 at capacity. Public also busy. Using priority queue",
-                          limit_label))
+    c(primary, list(reason = sprintf("%s \u2014 at capacity. Fallback also busy. Using priority queue",
+                                      limit_label)))
   } else {
-    list(account = "genome-center-grp", partition = "high",
-         reason = "Lab group (no limit info available)")
+    c(primary, list(reason = "Primary partition (no limit info available)"))
   }
 }
 
@@ -3449,16 +3461,10 @@ speclib_cache_path <- function() {
   env_path <- Sys.getenv("DELIMP_SPECLIB_CACHE", "")
   if (nzchar(env_path)) return(env_path)
 
-  # Shared proteomics volume (macOS local mount)
-  shared_dir <- "/Volumes/proteomics-grp/dia-nn"
-  if (dir.exists(shared_dir)) {
-    return(file.path(shared_dir, "speclib_cache.rds"))
-  }
-
-  # HPC mount (Quobyte)
-  hpc_dir <- "/quobyte/proteomics-grp/dia-nn"
-  if (dir.exists(hpc_dir)) {
-    return(file.path(hpc_dir, "speclib_cache.rds"))
+  # v3.10.15 — pull paths from site config (UCD defaults preserved)
+  cfg <- delimp_site()
+  for (d in c(cfg$shared_diann_local, cfg$shared_diann_hpc)) {
+    if (nzchar(d) && dir.exists(d)) return(file.path(d, "speclib_cache.rds"))
   }
 
   # Fallback to user-local
@@ -3468,8 +3474,12 @@ speclib_cache_path <- function() {
 #' Check if the speclib cache is on a shared volume
 #' @return Logical
 speclib_cache_is_shared <- function() {
+  cfg <- delimp_site()
   path <- speclib_cache_path()
-  grepl("^/Volumes/proteomics-grp/|^/quobyte/proteomics-grp/", path)
+  prefixes <- c(cfg$storage_local, cfg$storage_hpc)
+  prefixes <- prefixes[nzchar(prefixes)]
+  if (length(prefixes) == 0) return(FALSE)
+  any(vapply(prefixes, function(p) startsWith(path, p), logical(1)))
 }
 
 #' Load the speclib cache registry
@@ -3639,15 +3649,11 @@ fasta_library_path <- function() {
   env_path <- Sys.getenv("DELIMP_FASTA_LIBRARY", "")
   if (nzchar(env_path) && dir.exists(env_path)) return(env_path)
 
-  # Shared proteomics volume (macOS local mount)
-  shared_path <- "/Volumes/proteomics-grp/dia-nn/fasta_library"
-  if (dir.exists(shared_path)) return(shared_path)
-
-  # HPC mount (Quobyte)
-  hpc_path <- "/quobyte/proteomics-grp/dia-nn/fasta_library"
-  if (dir.exists(hpc_path)) return(hpc_path)
-
-  # Fallback to user-local directory
+  # v3.10.15 — try site-configured paths in order, fall back to ~/.delimp_fasta_library
+  cfg <- delimp_site()
+  for (p in c(cfg$shared_fasta_lib_local, cfg$shared_fasta_lib_hpc)) {
+    if (nzchar(p) && dir.exists(p)) return(p)
+  }
 
   local_path <- file.path(Sys.getenv("HOME"), ".delimp_fasta_library")
   if (!dir.exists(local_path)) {
@@ -3662,8 +3668,9 @@ fasta_library_is_shared <- function() {
   env_path <- Sys.getenv("DELIMP_FASTA_LIBRARY", "")
   if (nzchar(env_path) && dir.exists(env_path)) return(TRUE)
 
-  dir.exists("/Volumes/proteomics-grp/dia-nn/fasta_library") ||
-    dir.exists("/quobyte/proteomics-grp/dia-nn/fasta_library")
+  cfg <- delimp_site()
+  any(vapply(c(cfg$shared_fasta_lib_local, cfg$shared_fasta_lib_hpc),
+    function(p) nzchar(p) && dir.exists(p), logical(1)))
 }
 
 #' Get the HPC-equivalent remote path for a library entry
@@ -4186,8 +4193,10 @@ activity_log_headers <- c(
 #' Get path for the unified activity log CSV
 #' Prefers shared storage on HPC, falls back to home dir.
 activity_log_path <- function() {
-  shared <- "/quobyte/proteomics-grp/de-limp/activity_log.csv"
-  if (file.exists(shared) || dir.exists(dirname(shared))) return(shared)
+  # v3.10.15 — site-configurable. UCD default preserved.
+  shared <- delimp_site()$shared_activity_log
+  if (nzchar(shared) && (file.exists(shared) || dir.exists(dirname(shared))))
+    return(shared)
   file.path(Sys.getenv("HOME"), ".delimp_activity_log.csv")
 }
 

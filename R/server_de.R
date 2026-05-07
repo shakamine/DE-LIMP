@@ -10,7 +10,7 @@ server_de <- function(input, output, session, values, add_to_log) {
     if (!any(grepl("^[XNW]P_", head(df$Gene, 50)))) return(df)
     gm <- values$ncbi_gene_map
     if (is.null(gm)) {
-      search_dirs <- c(tempdir(), "/data/fasta", "/quobyte/proteomics-grp/de-limp/fasta")
+      search_dirs <- c(tempdir(), delimp_site()$gene_map_dirs)
       if (!is.null(values$diann_fasta_files))
         search_dirs <- c(dirname(values$diann_fasta_files), search_dirs)
       for (d in unique(search_dirs)) {

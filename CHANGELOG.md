@@ -5,6 +5,21 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.15] — 2026-05-07
+
+### Changed (de-UCD-specific structural defaults)
+- **Introduced `R/helpers_site.R`** with `delimp_site()` — single source of truth for site-specific structural defaults (storage prefixes, shared FASTA library paths, shared activity log path, SLURM primary/fallback partition pair, gene-map search dirs). UCD defaults preserved exactly; non-UCD sites override via env vars (`DELIMP_*`) or `~/.delimp_site.yaml`.
+- **`translate_storage_path()`** now reads `storage_local` / `storage_hpc` from the site config instead of the hardcoded `/Volumes/proteomics-grp/` ↔ `/quobyte/proteomics-grp/` regex pair. UCD users see no change. Non-UCD users with `DELIMP_STORAGE_LOCAL=...` and `DELIMP_STORAGE_HPC=...` get path translation that actually works for their layout.
+- **`speclib_cache_path()`, `speclib_cache_is_shared()`, `fasta_library_path()`, `fasta_library_is_shared()`** now consult `delimp_site()$shared_diann_*` and `shared_fasta_lib_*` instead of hardcoded UCD paths.
+- **`activity_log_path()`** now uses `delimp_site()$shared_activity_log` (UCD default preserved).
+- **Auto-queue partition picker (`select_best_partition()`)** now reads primary/fallback from `delimp_site()$slurm_account` + `slurm_partition` and `slurm_fallback_account` + `slurm_fallback_partition`. UCD users get the same `genome-center-grp/high` ↔ `publicgrp/low` behavior; non-UCD users with their own SLURM setups can configure their pair.
+- **`server_de.R` / `server_gsea.R` gene-map search paths** now use `delimp_site()$gene_map_dirs` (colon-separated `DELIMP_GENE_MAP_DIRS` env var). UCD users get `c("/data/fasta", "/quobyte/proteomics-grp/de-limp/fasta")`; non-UCD users can configure.
+- **`resolve_fasta_dir()`** new helper replaces three sites of `getOption("delimp.fasta_dir", default = "/quobyte/proteomics-grp/de-limp/fasta")`. Tries (in order): explicit programmatic override → `delimp_site()$fasta_dir_local` → `delimp_site()$fasta_dir_hpc` → `~/.delimp_fasta` (created on demand). Fixes the community-reported bug where non-UCD users had `/quobyte/proteomics-grp/de-limp/fasta/` silently created on their local WSL/Docker filesystem because `dir.create(..., recursive = TRUE)` succeeded against a path that looked-like-but-wasn't the UCD HPC mount.
+
+### Backwards compatibility
+- All defaults in `delimp_site()` preserve historic UCD behavior. Brett's lab and other UC Davis users see zero functional change.
+- UI textbox defaults (SSH host `hive.hpc.ucdavis.edu`, SLURM account `genome-center-grp`, SIF path, raw-data placeholder) **were intentionally left as UCD strings** — they're user-overrideable in the UI, so they're not "structural" hardcoding. Non-UCD users type over them once and DE-LIMP persists their choice via session settings.
+
 ## [3.10.14] — 2026-05-06
 
 ### Added

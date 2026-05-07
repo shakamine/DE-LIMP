@@ -2953,8 +2953,7 @@ server_search <- function(input, output, session, values, add_to_log,
     fname <- generate_fasta_filename(row$upid, row$organism, input$fasta_content_type)
 
     # Determine output directory for FASTA (never use $HOME — quota issues on HPC)
-    fasta_dir <- getOption("delimp.fasta_dir",
-      default = "/quobyte/proteomics-grp/de-limp/fasta")
+    fasta_dir <- resolve_fasta_dir()
     if (!dir.exists(fasta_dir)) dir.create(fasta_dir, recursive = TRUE, showWarnings = FALSE)
     if (!dir.exists(fasta_dir)) fasta_dir <- tempdir()
     output_path <- file.path(fasta_dir, fname)
@@ -3141,8 +3140,7 @@ server_search <- function(input, output, session, values, add_to_log,
     row <- ncbi_results()[sel, ]
 
     # Download to pre-staged FASTA dir (create if needed, never use $HOME)
-    fasta_dir <- getOption("delimp.fasta_dir",
-      default = "/quobyte/proteomics-grp/de-limp/fasta")
+    fasta_dir <- resolve_fasta_dir()
     if (!dir.exists(fasta_dir)) dir.create(fasta_dir, recursive = TRUE, showWarnings = FALSE)
     if (!dir.exists(fasta_dir)) fasta_dir <- tempdir()  # last resort
 
@@ -4025,8 +4023,7 @@ server_search <- function(input, output, session, values, add_to_log,
 
   # Scan for pre-staged databases on startup
   observe({
-    fasta_dir <- getOption("delimp.fasta_dir",
-      default = "/quobyte/proteomics-grp/de-limp/fasta")
+    fasta_dir <- resolve_fasta_dir()
     databases <- scan_prestaged_databases(fasta_dir)
     if (length(databases) > 0) {
       updateSelectInput(session, "prestaged_fasta", choices = databases)
