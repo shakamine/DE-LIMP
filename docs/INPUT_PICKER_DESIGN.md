@@ -287,7 +287,19 @@ The existing `auto_load` flow on completion (already implemented for HPC) is the
 - `R/helpers_search.R` — concurrency cap reading from site config
 - `R/ui.R` — queue position + cancel-queued button in the existing Job Queue panel
 
-### 6.5 Risks / edges
+### 6.5 Speclib cache reuse (and contribute)
+
+**Already in place**: `server_search.R:4430-4468` runs **before** the backend dispatch — every search (HPC, local, Docker) checks the predicted-library cache via `speclib_cache_lookup(fasta + params + mode)`. If a matching library exists, the search skips library prediction and reuses it. This means the local queue's first search may take 30-60 minutes (predicting library), but subsequent queued searches with the **same FASTA + same search params** reuse the library and skip directly to raw-file analysis. Single-FASTA labs running 50 batched searches save hours.
+
+**Gap for local-only users**: cache **registration** (`speclib_cache_register`) is currently gated on the HPC parallel pipeline's `step_status[["step1"]] == "completed"` (`server_search.R:5566-5592`). Local/Docker single-job searches **never register** the libraries they generate. So a lab that only runs local searches has an empty cache forever, and Phase E's queue can't take advantage of cache reuse.
+
+**Phase E adds**: a local-completion observer that registers the generated library on successful local/Docker exit. The library file is at `<output_dir>/report-lib.predicted.speclib` (already written by DIA-NN's `--out-lib`). Detect file existence on subprocess exit, call `speclib_cache_register()` with the same `(fasta_files, search_params, search_mode, ...)` tuple, mark the job entry's `speclib_cached = TRUE`. After the first search in the queue completes, every subsequent queued search with the same FASTA reuses the library.
+
+**Cache key components** (already defined in `speclib_cache_key()` line 3430): FASTA file hashes (or filenames + sizes) + `enzyme` + `missed_cleavages` + peptide length range + precursor m/z range + charge range + variable mods. Different FASTA = different key = no false reuse.
+
+**Cross-machine note**: when `speclib_cache_path()` resolves to a shared location (UCD's `/Volumes/proteomics-grp/dia-nn/`), local-search registration contributes to the lab-wide cache. Non-UCD users get a per-machine cache by default.
+
+### 6.6 Risks / edges
 
 - **Mid-flight cancel**: cancelling a `running` local job needs to kill the subprocess and free the slot. `processx::process` already has `$kill()` — wire it to the cancel button.
 - **App restart with queued jobs**: queued jobs are persisted to `~/.delimp_job_queue.rds` (v3.10.20+). On restart, queued items should resume in order. `running` items should be retroactively reconciled — if the subprocess died when the app was killed, transition to `failed` with a notification.
@@ -350,3 +362,4 @@ Before any code lands:
 - **2026-05-07**: Brett confirmed filename validation should detect spaces/special chars; auto-rename feature added as Phase D modeled on FragPipe's rename tool — **non-destructive preview-then-confirm flow with rename log for audit**.
 - **2026-05-07**: Brett added scope: validation also applies to **folder names** (not just files) — `.d` directories, parent dirs picked via shinyDirButton, subdirs typed in the Phase C "Create new subdir" field. Same sanitizer.
 - **2026-05-07**: Brett added Phase E — local-search FIFO queue. Today, submitting a second local search while the first runs produces undefined behavior (concurrent processes fight for resources, Docker name collisions). Want submit-and-forget batch behavior with strict FIFO by default; concurrency cap configurable via site config for power users.
+- **2026-05-07**: Brett added speclib cache reuse to Phase E — "like we do on the cluster." Cache **lookup** is already backend-agnostic (line 4430), so local searches automatically reuse cached libraries from anywhere in the lab. But cache **registration** is currently HPC-parallel-only — local searches never contribute to the cache. Phase E adds a local-completion observer that calls `speclib_cache_register()` after the search exits successfully, so a lab batching local searches gets cache reuse from the second search onward.
