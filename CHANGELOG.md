@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.16] — 2026-05-07
+
+### Fixed
+- **`Launch_DE-LIMP_WSL.bat` falsely reported "Ubuntu installed" on a fresh Windows box with no WSL distro.** The Ubuntu existence probe used `wsl -d Ubuntu -e true >nul 2>&1` followed by `if errorlevel 1`. Windows batch's `if errorlevel N` evaluates as "errorlevel >= N", and WSL returns negative-ish exit codes for `WSL_E_DISTRO_NOT_FOUND` that the test misinterprets as success. So the launcher skipped the auto-install path and proceeded to copy + run, then failed downstream with `"There is no distribution with the supplied name. Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND"`. Replaced with a sentinel-string probe: run `echo __DELIMP_UBUNTU_OK__` inside Ubuntu and `findstr` for the literal sentinel — exit-code-independent, works regardless of Windows / WSL version quirks. If the sentinel isn't in the output, trigger `wsl --install -d Ubuntu` as designed. Caught while doing a fresh Windows install of v3.10.15.
+
 ## [3.10.15] — 2026-05-07
 
 ### Changed (de-UCD-specific structural defaults)

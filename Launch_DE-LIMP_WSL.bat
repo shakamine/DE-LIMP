@@ -43,14 +43,22 @@ if errorlevel 1 (
 )
 
 :: ----------------------------------------------------------------------------
-:: 2. Check that an Ubuntu distro is installed
+:: 2. Check that an Ubuntu distro is installed and reachable
 ::
 ::    `wsl --list --quiet` on Windows 11 outputs UTF-16, which findstr can't
-::    read — it would always report "not found." Instead we just try to run
-::    a trivial command inside Ubuntu. If it succeeds, the distro exists and
-::    is ready. If it fails, we trigger an install.
+::    read. The previous probe `wsl -d Ubuntu -e true && if errorlevel 1`
+::    was unreliable: Windows batch's `if errorlevel N` evaluates as
+::    "errorlevel >= N", and WSL returns negative-ish exit codes for
+::    `WSL_E_DISTRO_NOT_FOUND` that the test misinterprets as success.
+::    The launcher then proceeded to copy/run, only to fail downstream
+::    with cryptic "There is no distribution with the supplied name."
+::
+::    v3.10.16 — sentinel-string probe. Run a command that prints a known
+::    sentinel; if the sentinel isn't in the output, the distro isn't
+::    there. This is exit-code-independent and works regardless of
+::    Windows / WSL version quirks.
 :: ----------------------------------------------------------------------------
-wsl -d Ubuntu -e true >nul 2>&1
+wsl -d Ubuntu -e bash -c "echo __DELIMP_UBUNTU_OK__" 2>&1 | findstr /c:"__DELIMP_UBUNTU_OK__" >nul
 if errorlevel 1 (
     echo  No working Ubuntu distro in WSL. Installing Ubuntu now...
     echo  ^(This opens a separate window — follow the prompts, then close it and re-run this launcher.^)
