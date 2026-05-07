@@ -97,16 +97,39 @@ if errorlevel 1 (
 :: 4. Run the app (setup is auto-triggered on first run)
 :: ----------------------------------------------------------------------------
 echo.
-echo  Starting DE-LIMP...
-echo  If this is your first run, expect ~20-30 min of R package installs.
-echo  Subsequent runs take under 1 minute.
+echo  ============================================
+echo    Starting DE-LIMP...
+echo  ============================================
 echo.
-echo  When the terminal shows "Listening on http://0.0.0.0:3838",
-echo  your browser will open automatically.
+echo    FIRST INSTALL: 20-30 MINUTES
+echo    (R + Bioconductor packages compile from source)
+echo.
+echo    Subsequent runs: under 1 minute.
+echo.
+echo    Watch this terminal for progress. When it shows
+echo        "Listening on http://0.0.0.0:3838"
+echo    the browser opens automatically.
+echo.
+echo    The browser-open command waits for the app to
+echo    actually be listening on port 3838 before opening
+echo    -- it will NOT open prematurely on first install.
+echo.
+echo    You can also open http://localhost:3838 manually
+echo    anytime once the "Listening on" line appears.
+echo.
+echo  ============================================
 echo.
 
-:: Open browser after a short delay (detached from the wsl process)
-start "" /B cmd /c "timeout /t 90 /nobreak >nul && start http://localhost:3838"
+:: v3.10.17 — wait for the Shiny port to actually be listening before
+:: opening the browser. The previous fixed 90-second delay was way too
+:: short for a fresh install (20-30 min of R + Bioconductor compiles),
+:: so the browser opened to a "can't connect" error and confused users.
+::
+:: Polls every 2 seconds for up to 60 minutes. Opens the browser only
+:: when port 3838 is listening. Silently exits if the timeout is hit
+:: (no false-positive open on a stuck install).
+start "" /B powershell -NoProfile -WindowStyle Hidden -Command ^
+  "$d=3600; while($d -gt 0){ if (Get-NetTCPConnection -LocalPort 3838 -State Listen -ErrorAction SilentlyContinue) { Start-Process 'http://localhost:3838'; exit 0 }; Start-Sleep -Seconds 2; $d -= 2 }"
 
 :: Run inside WSL — this blocks until the app is stopped with Ctrl+C
 wsl -d Ubuntu -e bash -c "bash ~/delimp_wsl_setup.sh"

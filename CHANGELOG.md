@@ -5,6 +5,12 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.17] — 2026-05-07
+
+### Fixed
+- **WSL launcher's auto-browser-open was port-blind on first install.** It used a hardcoded 90-second `timeout` then opened `http://localhost:3838` — but a fresh install spends 20–30 minutes compiling R + Bioconductor packages, so the browser hit the port long before Shiny was listening, got "can't connect", and confused the user into thinking something was broken (it wasn't — install just hadn't finished). Replaced with a port-aware PowerShell poll: every 2 seconds, check `Get-NetTCPConnection -LocalPort 3838 -State Listen`. Opens the browser only once the port is actually accepting connections. 60-minute timeout (silent exit, no false-positive open) covers even the slowest first install.
+- **First-install banner in the launcher console now warns prominently** that the install takes 20-30 min and that the browser-open is port-aware (won't fire prematurely). Includes the manual-open URL (`http://localhost:3838`) so users who want to open it themselves can.
+
 ## [3.10.16] — 2026-05-07
 
 ### Fixed
