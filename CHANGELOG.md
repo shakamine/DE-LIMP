@@ -5,6 +5,17 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.18] — 2026-05-07
+
+### Fixed
+- **Robust .NET 8 runtime install in `delimp_wsl_setup.sh`** — likely root cause of the community-reported "No MS2 spectra: aborting" Thermo .raw read failure. DIA-NN's `RawFileReader` requires .NET 8; if it's missing or wrong-version, library prediction still works (pure C++) but raw file reading silently fails. Old install logic had two failure modes: (a) on Ubuntu 26.04 (released April 2026) the script added Microsoft's apt repo but Microsoft hadn't yet published `dotnet-runtime-8.0` for that release, so apt-get failed and the entire setup script aborted; (b) if `dotnet` command was already on PATH at any version (e.g. stale 6.x or broken install), the script's `command -v dotnet` short-circuited and skipped reinstall — DIA-NN then ran with a wrong-version dotnet and silently couldn't read .raw. Replaced with a 4-tier install:
+  1. **Detect existing dotnet 8.x** specifically (via `dotnet --list-runtimes`), skip only if a real 8.x runtime is present
+  2. **apt with multiple package-name candidates** (`dotnet-runtime-8.0`, `dotnet-runtime-8`, `dotnet8`) — covers Ubuntu naming shifts across 22.04 / 24.04 / 26.04
+  3. **Microsoft's apt repo + same package-name sweep**
+  4. **Last-resort: Microsoft's official `dotnet-install.sh`** — works on any Linux distro/version regardless of apt channel availability. Installs to `/usr/share/dotnet`, symlinks `/usr/local/bin/dotnet` so DIA-NN finds it.
+
+  Verified to install cleanly on Ubuntu 26.04. Brett caught it stress-testing the v3.10.15-17 install path on a fresh Windows 26.04-WSL box.
+
 ## [3.10.17] — 2026-05-07
 
 ### Fixed

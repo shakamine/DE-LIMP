@@ -290,23 +290,83 @@ install_diann() {
         date > "${DIANN_LICENSE_FLAG}"
     fi
 
-    # .NET 8 runtime — Ubuntu 24.04 has it in the default apt repos;
-    # 22.04 needs Microsoft's apt repo.
-    if ! command -v dotnet >/dev/null 2>&1; then
-        log "Installing .NET 8 runtime..."
-        if apt-cache show dotnet-runtime-8.0 >/dev/null 2>&1; then
-            sudo apt-get install -y dotnet-runtime-8.0
-        else
-            log "dotnet-runtime-8.0 not in default repos — adding Microsoft repo..."
-            local codename="$(lsb_release -cs)"
-            wget -q "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb" \
-                -O /tmp/packages-microsoft-prod.deb
-            sudo dpkg -i /tmp/packages-microsoft-prod.deb
-            rm /tmp/packages-microsoft-prod.deb
-            sudo apt-get update
-            sudo apt-get install -y dotnet-runtime-8.0
+    # .NET 8 runtime — needed by DIA-NN's RawFileReader for Thermo .raw files.
+    # If this is missing or wrong-version, DIA-NN library prediction works
+    # (pure C++) but raw file reading fails with "No MS2 spectra: aborting"
+    # — exactly the bug a community user hit on Ubuntu 26.04 (v3.10.18).
+    #
+    # v3.10.18 — robust multi-tier install:
+    #   Tier 1: detect existing dotnet 8.x and skip
+    #   Tier 2: apt with multiple package names (dotnet-runtime-8.0,
+    #           dotnet-runtime-8, dotnet8) — covers Ubuntu 22.04, 24.04,
+    #           naming changes, etc.
+    #   Tier 3: Microsoft's apt repo + the same package-name sweep
+    #   Tier 4: Microsoft's official dotnet-install.sh — always works
+    #           regardless of distro/version, but installs to /usr/share/dotnet
+    #           outside apt. Used when Ubuntu version is too new (e.g. 26.04
+    #           released April 2026) for Microsoft's channel to have caught up.
+    install_dotnet8_runtime() {
+        # 1. Already installed at version 8.x?
+        if command -v dotnet >/dev/null 2>&1; then
+            local v="$(dotnet --list-runtimes 2>/dev/null | grep -E 'Microsoft\.NETCore\.App 8\.' | head -1)"
+            if [ -n "${v}" ]; then
+                log ".NET 8 runtime already installed: ${v}"
+                return 0
+            fi
+            warn "dotnet command exists but no 8.x runtime — DIA-NN's .raw reader needs 8.x. Installing..."
         fi
-    fi
+
+        # 2. apt with multiple package-name candidates (Ubuntu naming has shifted)
+        for pkg in dotnet-runtime-8.0 dotnet-runtime-8 dotnet8; do
+            if apt-cache show "${pkg}" >/dev/null 2>&1; then
+                log "Installing ${pkg} from default apt..."
+                if sudo apt-get install -y "${pkg}"; then return 0; fi
+            fi
+        done
+
+        # 3. Microsoft's apt repo + same sweep
+        log "Default apt has no dotnet 8 runtime — adding Microsoft repo..."
+        local urel="$(lsb_release -rs)"
+        if wget -q "https://packages.microsoft.com/config/ubuntu/${urel}/packages-microsoft-prod.deb" \
+                -O /tmp/packages-microsoft-prod.deb; then
+            sudo dpkg -i /tmp/packages-microsoft-prod.deb >/dev/null 2>&1 || true
+            rm -f /tmp/packages-microsoft-prod.deb
+            sudo apt-get update -qq || true
+            for pkg in dotnet-runtime-8.0 dotnet-runtime-8 dotnet8; do
+                if apt-cache show "${pkg}" >/dev/null 2>&1; then
+                    log "Installing ${pkg} from Microsoft apt..."
+                    if sudo apt-get install -y "${pkg}"; then return 0; fi
+                fi
+            done
+            warn "Microsoft repo for Ubuntu ${urel} has no dotnet-runtime-8 yet (likely a too-new Ubuntu)."
+        fi
+
+        # 4. Last-resort: Microsoft's official dotnet-install.sh — works on any
+        #    Linux distro/version. Installs to /usr/share/dotnet so DIA-NN
+        #    finds it (DOTNET_ROOT env or PATH). Slow (~150 MB download).
+        log "Falling back to Microsoft's official dotnet-install.sh..."
+        local installer="/tmp/dotnet-install.sh"
+        if curl -sSL https://dot.net/v1/dotnet-install.sh -o "${installer}"; then
+            chmod +x "${installer}"
+            sudo "${installer}" --runtime dotnet --version "8.0" \
+                --install-dir /usr/share/dotnet
+            sudo ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+            rm -f "${installer}"
+            if command -v dotnet >/dev/null 2>&1 && \
+               dotnet --list-runtimes 2>/dev/null | grep -qE 'Microsoft\.NETCore\.App 8\.'; then
+                log ".NET 8 runtime installed via dotnet-install.sh"
+                return 0
+            fi
+        fi
+
+        err ".NET 8 runtime install FAILED at all four tiers (apt default, Microsoft apt, dotnet-install.sh)."
+        err "DIA-NN's Thermo .raw reader requires .NET 8 — searches will fail with 'No MS2 spectra: aborting'."
+        err "Manual fix: install .NET 8 runtime via your distribution's docs, then re-run this script."
+        return 1
+    }
+
+    log "Installing .NET 8 runtime..."
+    install_dotnet8_runtime
 
     # Resolve the version to download. "latest" triggers an API lookup for the
     # newest non-Preview Linux zip; anything else is treated as an explicit
