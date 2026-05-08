@@ -1,19 +1,15 @@
 {
-  "updated_at": "2026-05-07T08:39:49+00:00",
+  "updated_at": "2026-05-08T07:46:59+00:00",
   "github": {
-    "clones_14d": 1866,
-    "unique_users_14d": 455,
-    "views_14d": 164,
-    "unique_visitors_14d": 34,
+    "clones_14d": 2187,
+    "unique_users_14d": 509,
+    "views_14d": 171,
+    "unique_visitors_14d": 32,
     "stars": 7,
     "forks": 0
   },
   "trends": {
     "clones": [
-  {
-    "date": "2026-04-23",
-    "count": 43
-  },
   {
     "date": "2026-04-24",
     "count": 106
@@ -65,13 +61,13 @@
   {
     "date": "2026-05-06",
     "count": 83
+  },
+  {
+    "date": "2026-05-07",
+    "count": 91
   }
 ],
     "views": [
-  {
-    "date": "2026-04-23",
-    "count": 5
-  },
   {
     "date": "2026-04-24",
     "count": 11
@@ -123,6 +119,10 @@
   {
     "date": "2026-05-06",
     "count": 6
+  },
+  {
+    "date": "2026-05-07",
+    "count": 5
   }
 ]
   },
@@ -135,7 +135,7 @@
     "author": "mpadula",
     "comments": 2,
     "created": "2026-03-30",
-    "updated": "2026-05-06",
+    "updated": "2026-05-07",
     "url": "https://github.com/bsphinney/DE-LIMP/discussions/2"
   },
   {
@@ -159,6 +159,6 @@
 ]
   },
   "version": {
-    "current": "3.10.14"
+    "current": "3.10.30"
   }
 }
