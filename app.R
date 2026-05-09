@@ -1,6 +1,6 @@
 # ==============================================================================
 #  DE-LIMP: Differential Expression & Limpa Proteomics App
-#  Version: 3.10.30  (canonical source: ./VERSION — bump both together)
+#  Version: 3.10.31  (canonical source: ./VERSION — bump both together)
 #  (Formerly LIMP-D)
 #  Status: Production Ready (Hugging Face Compatible v1.2)
 # ==============================================================================
@@ -309,9 +309,23 @@ search_enabled <- docker_available || hpc_available || local_diann
 # Apptainer sets APPTAINER_CONTAINER / SINGULARITY_CONTAINER automatically
 is_apptainer <- nzchar(Sys.getenv("APPTAINER_CONTAINER", "")) ||
                 nzchar(Sys.getenv("SINGULARITY_CONTAINER", ""))
+# v3.10.31 — distinguish WSL from Docker. Both satisfy `local_diann +
+# DELIMP_DATA_DIR` so the previous check mis-labeled WSL installs as
+# "Docker". WSL signals: WSL_DISTRO_NAME env (set by Microsoft's
+# WSL2 init) and "Microsoft" or "WSL" string in /proc/version.
+is_wsl <- nzchar(Sys.getenv("WSL_DISTRO_NAME", "")) ||
+          nzchar(Sys.getenv("WSL_INTEROP", "")) ||
+          (file.exists("/proc/version") &&
+            tryCatch(any(grepl("Microsoft|WSL",
+                readLines("/proc/version", n = 1, warn = FALSE),
+                ignore.case = TRUE)),
+              error = function(e) FALSE))
+is_docker <- file.exists("/.dockerenv")
 deploy_env <- if (is_hf_space) {
   "Hugging Face"
-} else if (local_diann && nzchar(delimp_data_dir)) {
+} else if (is_wsl) {
+  "WSL"
+} else if (is_docker || (local_diann && nzchar(delimp_data_dir))) {
   "Docker"
 } else if (is_apptainer || local_sbatch) {
   "HPC"

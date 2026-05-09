@@ -5,6 +5,12 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.31] — 2026-05-08
+
+### Fixed
+- **WSL deployments mis-labeled "Docker"**. The `deploy_env` detection at `app.R:312` checked `local_diann && nzchar(delimp_data_dir)` — both conditions are satisfied by both Docker mode AND the WSL setup script (which sets `DELIMP_DATA_DIR` and installs `diann-linux`). So the navbar badge + browser tab title said "DE-LIMP (Docker)" on a fresh WSL install. Added `is_wsl` detection ahead of the Docker check via `WSL_DISTRO_NAME` env, `WSL_INTEROP` env, or `Microsoft|WSL` in `/proc/version`. WSL deployments now show a purple **"WSL"** badge. Also added an explicit `is_docker` check (`/.dockerenv` file) so containers actually inside Docker are correctly labeled regardless of `DELIMP_DATA_DIR`.
+- **shinyFiles file browser couldn't see directories starting with `.`** — affected anyone storing data in `~/.delimp/data` (the WSL setup script's default location). Added `hidden = TRUE` to all `shinyDirChoose` / `shinyFileChoose` calls so dotfile dirs are visible. Without it, the friend reported seeing the volume list but no `.delimp` subdirectory.
+
 ## [3.10.30] — 2026-05-07
 
 ### Fixed

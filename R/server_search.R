@@ -2113,11 +2113,17 @@ server_search <- function(input, output, session, values, add_to_log,
     }
   }
 
-  shinyFiles::shinyDirChoose(input, "raw_data_dir", roots = volumes, session = session)
-  shinyFiles::shinyDirChoose(input, "fasta_browse_dir", roots = volumes, session = session)
-  shinyFiles::shinyDirChoose(input, "output_base_dir", roots = volumes, session = session)
+  # v3.10.31 — hidden = TRUE so directories starting with "." (like
+  # ~/.delimp/data) are visible. Without it, users storing data in
+  # ~/.delimp/data can't browse to their own files.
+  shinyFiles::shinyDirChoose(input, "raw_data_dir", roots = volumes, session = session,
+    hidden = TRUE)
+  shinyFiles::shinyDirChoose(input, "fasta_browse_dir", roots = volumes, session = session,
+    hidden = TRUE)
+  shinyFiles::shinyDirChoose(input, "output_base_dir", roots = volumes, session = session,
+    hidden = TRUE)
   shinyFiles::shinyFileChoose(input, "lib_file", roots = volumes, session = session,
-    filetypes = c("speclib", "tsv", "csv"))
+    filetypes = c("speclib", "tsv", "csv"), hidden = TRUE)
 
   # SSH key file browser — include .ssh directories for key discovery
   ssh_key_roots <- c(volumes)
@@ -2132,9 +2138,11 @@ server_search <- function(input, output, session, values, add_to_log,
       updateTextInput(session, "ssh_key_path", value = as.character(file_info$datapath[1]))
     }
   })
-  shinyFiles::shinyDirChoose(input, "docker_output_dir", roots = volumes, session = session)
+  shinyFiles::shinyDirChoose(input, "docker_output_dir", roots = volumes, session = session,
+    hidden = TRUE)
   if (local_diann && !nzchar(delimp_data_dir)) {
-    shinyFiles::shinyDirChoose(input, "local_output_dir_browse", roots = volumes, session = session)
+    shinyFiles::shinyDirChoose(input, "local_output_dir_browse", roots = volumes,
+      session = session, hidden = TRUE)
   }
 
   # ============================================================================

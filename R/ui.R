@@ -20,6 +20,7 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
     Docker = "#e74c3c",       # red
     HPC    = "#27ae60",       # green
     Local  = "#3498db",       # blue
+    WSL    = "#9b59b6",       # purple — v3.10.31, distinguishes from Docker
     `Hugging Face` = "#f39c12" # orange
   )
   env_color <- env_colors[[deploy_env]] %||% "#6c757d"
