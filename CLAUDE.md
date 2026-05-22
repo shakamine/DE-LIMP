@@ -91,7 +91,7 @@ Navbar: **New Search** (conditional) | **QC** | **Analysis** dropdown | **Output
 - **Phosphoproteomics**: shown when `values$phospho_detected$detected` is TRUE
 
 **Tab values that MUST NOT change** (used by server nav_select/nav_show/nav_hide):
-`"QC"`, `"DE Dashboard"`, `"Gene Set Enrichment"`, `"mofa_tab"`, `"comparator_tab"`, `"AI Analysis"`, `"Output"`, `"Phosphoproteomics"`, `"Data Overview"`, `"data_overview_tabs"`, `"Assign Groups & Run"`, `"about_tab"`, `"history_tab"`
+`"QC"`, `"DE Dashboard"`, `"Gene Set Enrichment"`, `"mofa_tab"`, `"comparator_tab"`, `"AI Analysis"`, `"Output"`, `"Phosphoproteomics"`, `"Data Overview"`, `"data_overview_tabs"`, `"Assign Groups & Run"`, `"about_tab"`, `"history_tab"`, `"search_tab"` (proteogenomics Phase D — DIA-NN Run Search sub-panel of New Search dropdown), `"build_database_tab"` (proteogenomics Phase D — Build Database sub-panel, HPC-gated)
 
 #### Analysis dropdown
 - **Data Overview** — `navset_card_tab(id = "data_overview_tabs")`: Assign Groups & Run, Signal Distribution, Dataset Summary, Replicate Consistency, Contaminant Analysis, Expression Grid, Data Explorer, Data Completeness, AI Summary

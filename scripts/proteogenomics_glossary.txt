@@ -1,0 +1,190 @@
+PROTEOGENOMICS GLOSSARY
+============================================================================
+
+This experiment used an expanded "proteogenomics" search database that combines
+standard reference proteins (UniProt) with sample-specific predicted proteins
+derived from matched RNA-seq. Every protein entry has a `source` tag that
+identifies which class it belongs to.
+
+----------------------------------------------------------------------------
+HOW TO READ A PROTEOGENOMICS IDENTIFIER
+----------------------------------------------------------------------------
+
+The accession follows UniProt format:  sp|<protein_id>|<symbol>_<PROJECT_TAG>
+
+The description contains metadata as key=value pairs:
+   source=...           one of REF, NOVEL_GENE, NOVEL_ISOFORM, UNPARSED, VARIANT
+   ORF_type=...         complete | 5prime_partial | 3prime_partial | internal
+   strand=...           + or -
+   len=...              ORF length in amino acids
+   coords=...           transcript-relative coordinates of the ORF
+   parent_gene=...      gene ID this ORF belongs to (ENSMUSG/ENSG or MSTRG)
+   transcript=...       transcript ID this ORF was predicted from
+
+Example header:
+   sp|MSTRG.10029.5.p2|MSTRG.10029_MM39TEST source=NOVEL_GENE
+      ORF_type=5prime_partial strand=- len=112
+      coords=MSTRG.10029.5:344-682(-)
+      parent_gene=MSTRG.10029 transcript=MSTRG.10029.5
+
+PROJECT_TAG (e.g., "MM39TEST") identifies which proteogenomics build this entry
+came from. Useful for tracking when multiple builds are loaded.
+
+NOTE: DIA-NN does not preserve the description key=value tags in its output.
+DE-LIMP's `classify_proteins()` helper reclassifies entries by the Protein.Group
+accession STRUCTURE (e.g., MSTRG.* prefix → NOVEL_GENE, ENSMUST*.pN → REF) and
+optionally upgrades REF → NOVEL_ISOFORM by re-reading the source= tags from the
+original FASTA. When reading DIA-NN report.parquet directly, do not expect to
+find source= tags in any column — use the accession patterns instead.
+
+----------------------------------------------------------------------------
+THE FOUR PROTEIN CLASSES
+----------------------------------------------------------------------------
+
+source=REF
+   Standard reference protein. The protein_id is an Ensembl transcript ID
+   (e.g., ENSMUST00000000001.5.p1). The symbol (e.g., "Gnai3") is the
+   standard gene symbol. These are well-characterized proteins from the
+   reference proteome and should be interpreted normally — same as a hit
+   in any standard UniProt-only search.
+
+source=NOVEL_GENE
+   A protein predicted from a StringTie transcript that does NOT overlap
+   any annotated gene — a putative novel protein-coding region discovered
+   from sample-specific RNA-seq. The protein_id begins with "MSTRG.".
+
+   These are CANDIDATE novel ORFs. They require orthogonal validation
+   before biological claims can be made. Single-peptide identifications
+   are the norm, not the exception.
+
+source=NOVEL_ISOFORM
+   A protein predicted from a transcript that overlaps a known gene but
+   represents a novel splicing pattern (alternative isoform not in the
+   reference annotation). These inherit the parent gene's symbol but
+   carry an alternative protein sequence.
+
+   For proteogenomics, novel isoforms are often more biologically
+   interesting than novel genes — alternative splicing is a well-
+   characterized mechanism for regulating protein function. A novel
+   isoform with differential expression vs the canonical form is a
+   strong biological signal.
+
+source=UNPARSED
+   Header could not be parsed by the rewriter — should not appear in a
+   clean pipeline run. If present, treat as a data-quality flag.
+
+source=VARIANT  (only if optional Phase 3 ran)
+   Variant proteoform of a canonical reference protein. The protein_id
+   begins with INDEL_ENSP* or SNV_ENSP*, followed by the parent Ensembl
+   protein ID, codon position, and reference→alternate sequence.
+
+   Example: INDEL_ENSP00000354813_81:CAAAAAAAACTC_CAAAAAAACTC
+   = ENSP00000354813 with a 1-nucleotide deletion at codon 81.
+
+----------------------------------------------------------------------------
+ORF_TYPE CONFIDENCE TIERING
+----------------------------------------------------------------------------
+
+Among NOVEL_GENE and NOVEL_ISOFORM entries, ORF_type indicates structural
+confidence:
+
+   complete           — Full ORF with start (ATG) and stop codon present.
+                        Highest confidence for a real protein. Treat as
+                        the strongest candidates for biological discussion.
+
+   5prime_partial     — Missing N-terminus (no start codon). Could be an
+                        alternative start site OR a truncated transcript
+                        assembly. Moderate confidence.
+
+   3prime_partial     — Missing C-terminus (no stop codon). Usually
+                        indicates truncated assembly. Lower confidence.
+
+   internal           — Missing both ends. Lowest confidence — typically
+                        a fragment of a longer transcript that wasn't
+                        fully assembled.
+
+When generating "top discoveries" lists, weight by ORF_type confidence.
+A `complete` ORF with modest fold-change is more interpretable than an
+`internal` ORF with high fold-change.
+
+----------------------------------------------------------------------------
+GENOMIC COORDINATES
+----------------------------------------------------------------------------
+
+The coords= field gives TRANSCRIPT-relative coordinates only. GENOMIC
+coordinates (which chromosome, which position) can be looked up from
+the merged.gtf file that ships alongside the FASTA, using the parent_gene
+field as the lookup key.
+
+DE-LIMP's Proteogenomics tab provides this lookup automatically. When
+discussing a NOVEL_GENE in the report, you may reference the parent_gene
+ID but do NOT invent a chromosome or position — defer to the user's tool
+to surface the actual coordinates.
+
+----------------------------------------------------------------------------
+INTERPRETATION GUIDANCE FOR THE REPORT
+----------------------------------------------------------------------------
+
+For REF and UNIPROT entries:
+   - Interpret normally. These are annotated proteins with known function.
+
+For NOVEL_GENE entries:
+   - Do NOT invent biological function. By definition these have no
+     prior annotation.
+   - Refer to them as "candidate novel proteins" or "novel ORF
+     candidates" — never as established proteins.
+   - When listing top hits, prefer `complete` ORFs over partials.
+   - Recommend orthogonal validation: targeted MS, de novo sequencing,
+     matched RNA-seq quantification, or western blot using a peptide-
+     specific antibody.
+
+For NOVEL_ISOFORM entries:
+   - The parent gene's known function is relevant context — you may
+     reference it.
+   - But emphasize that this is a NOVEL ISOFORM with potentially
+     ALTERED function, stability, or localization compared to the
+     canonical form.
+   - When the canonical reference protein is ALSO in DE_Results_Full.csv,
+     comparing fold-changes of canonical vs novel isoform is the most
+     informative framing.
+
+For VARIANT entries (if present):
+   - Parse the parent ENSP and translate to gene symbol.
+   - Report as "sequence-variant proteoform of {GENE} carrying {INDEL/SNV}
+     at codon {N}."
+   - If both canonical and variant are present, comparing their
+     fold-changes is the killer plot — a variant that behaves
+     differently from its canonical parent suggests altered function.
+   - For tumor samples, variant proteoforms are candidate neoantigens.
+
+GROUPING IN REPORT STRUCTURE:
+   Always discuss proteogenomic findings (NOVEL_GENE, NOVEL_ISOFORM,
+   VARIANT) in a SEPARATE section from canonical findings. Do not mix
+   them into the same "top proteins" lists.
+
+PEPTIDE-LEVEL EVIDENCE:
+   For NOVEL_GENE and NOVEL_ISOFORM hits, the supporting peptide MUST
+   contain sequence that distinguishes the novel form from any canonical
+   protein. DE-LIMP enforces this filter automatically; if you see a
+   novel-class entry, trust that it has been peptide-of-discovery
+   validated.
+
+----------------------------------------------------------------------------
+GENERAL CAUTIONS
+----------------------------------------------------------------------------
+
+- The expanded database is roughly 3-8x larger than UniProt alone.
+  Multiple-testing burden is higher; some non-canonical hits may be
+  marginal even at FDR < 0.05.
+- Peptide count matters MORE for proteogenomic hits than canonical:
+  a 1-peptide canonical hit is routine; a 1-peptide novel-class hit
+  is provisional and should be flagged as such.
+- When generating biological interpretation, group non-canonical hits
+  separately from canonical hits.
+- Do not include MSTRG.* or INDEL_ENSP* identifiers in main-text
+  result claims of a manuscript — these belong in supplementary
+  tables with explicit "candidate" or "putative" framing.
+
+============================================================================
+End of glossary. For questions about specific entries, consult the
+Proteogenomics tab in DE-LIMP.

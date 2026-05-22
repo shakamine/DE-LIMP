@@ -534,6 +534,11 @@ server <- function(input, output, session) {
     tic_metrics = NULL,            # data.frame: run, valid, total_auc, ..., shape_r, status, flags
     excluded_files = NULL,         # data.frame: filename, excluded_at, reason, user_note, source, group
     docker_available = docker_available,
+    # Proteogenomics Database Builder (Phase D)
+    is_proteogenomics      = FALSE,   # set TRUE when classify_proteins() finds REF/NOVEL_*/VARIANT
+    protein_classification = NULL,    # data.frame from classify_proteins(diann_report, fasta_path)
+    proteog_build_jobs     = list(),  # list of submit_proteogenomics_build() results — active + recent
+    proteog_active_fasta   = NULL,    # path to the proteogenomics FASTA used in the current search (NULL if none)
     # Multi-View Integration (MOFA2)
     mofa_view_configs = list(),
     mofa_views = list(),
@@ -585,6 +590,13 @@ server <- function(input, output, session) {
   server_facility(input, output, session, values, add_to_log,
                   is_core_facility, cf_config, search_enabled)
   server_session(input, output, session, values, add_to_log)
+
+  # Proteogenomics Database Builder — only call when HPC is available
+  # (the UI panel is gated the same way in R/ui.R). On Docker-only or HF
+  # the module is a no-op and the panel never renders.
+  if (hpc_available && !is_hf_space) {
+    server_proteog_builder(input, output, session, values)
+  }
 
   # --- Home directory quota check (HPC systems often have small quotas) ---
   session$onFlushed(function() {

@@ -459,3 +459,462 @@ cancel_proteog_build <- function(project_dir) {
     scancel_output = out
   ))
 }
+
+
+# =============================================================================
+# Shiny module — UI renderer + server logic for the Build Database 🧬 tab
+# =============================================================================
+# Called from app.R as: server_proteog_builder(input, output, session, values)
+#
+# Hard-gated by hpc_available + !is_hf_space at the UI layer (see R/ui.R), so
+# the server module assumes sbatch/squeue/sacct are reachable. If invoked on
+# Docker-only, the UI panel never renders so the observers below are inert.
+
+#' Render the Build Database tab body
+#'
+#' Five vertically-stacked accordion-style cards:
+#'   1. Source — SLIMS URL OR comma-separated SRA accessions
+#'   2. Sample scan / metadata verification
+#'   3. Reference selection (from /quobyte/.../references/registry.json)
+#'   4. Pipeline parameters (library type, strand, project name + tag)
+#'   5. Submit
+#'   plus an Active builds table polling status.json files
+#'
+#' All inputs are namespaced with `proteog_` to avoid colliding with the
+#' existing Run Search inputs (analysis_name, fasta_source, etc.).
+build_database_ui <- function() {
+  div(
+    style = "overflow-y: auto; max-height: calc(100vh - 150px); padding: 8px;",
+
+    # ── Header
+    div(
+      style = "background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;",
+      h4(icon("dna"), " Build Proteogenomics Database",
+         style = "margin: 0; color: #1b5e20;"),
+      p("Construct a sample-specific FASTA from matched RNA-seq data. The output ",
+        "appears in the Run Search FASTA dropdown with a \U0001F9EC tag.",
+        style = "margin: 4px 0 0 0; color: #2e7d32; font-size: 0.9em;")
+    ),
+
+    # ── Step 1: Source ──────────────────────────────────────────────────────
+    bslib::card(
+      bslib::card_header(tagList(icon("upload"), " 1. RNA-seq Source")),
+      bslib::card_body(
+        radioButtons("proteog_source_mode", NULL,
+                     choices = c("DNA Tech Core SLIMS URL" = "slims",
+                                 "SRA/ENA accession(s)"    = "sra"),
+                     selected = "slims", inline = TRUE),
+        conditionalPanel(
+          "input.proteog_source_mode == 'slims'",
+          textInput("proteog_slims_url", "SLIMS URL",
+                    placeholder = "http://slimsdata.genomecenter.ucdavis.edu/Data/<id>/Unaligned/",
+                    width = "100%")
+        ),
+        conditionalPanel(
+          "input.proteog_source_mode == 'sra'",
+          textInput("proteog_sra_accessions", "Accessions (comma-separated, max 24)",
+                    placeholder = "SRR1303776, SRR1303777",
+                    width = "100%"),
+          checkboxInput("proteog_subsample",
+                        "Stream-subsample to 5M read pairs per accession (fast test)",
+                        value = FALSE)
+        ),
+        actionButton("proteog_scan_btn", "Scan / Verify",
+                     icon = icon("magnifying-glass"),
+                     class = "btn-outline-primary")
+      )
+    ),
+
+    # ── Step 2: Scan / verification results ─────────────────────────────────
+    bslib::card(
+      bslib::card_header(tagList(icon("clipboard-check"), " 2. Sample Verification")),
+      bslib::card_body(uiOutput("proteog_scan_output"))
+    ),
+
+    # ── Step 3: Reference selection ─────────────────────────────────────────
+    bslib::card(
+      bslib::card_header(tagList(icon("book-open"), " 3. Reference Genome")),
+      bslib::card_body(
+        selectInput("proteog_reference_key", "Reference",
+                    choices = c("(scanning registry…)" = ""),
+                    width = "100%"),
+        uiOutput("proteog_reference_info")
+      )
+    ),
+
+    # ── Step 4: Pipeline parameters ─────────────────────────────────────────
+    bslib::card(
+      bslib::card_header(tagList(icon("sliders"), " 4. Parameters")),
+      bslib::card_body(
+        layout_columns(
+          col_widths = c(6, 6),
+          selectInput("proteog_library_type", "Library type",
+                      choices = c("polyA mRNA-Seq"            = "polyA",
+                                  "Total RNA + rRNA depletion" = "ribo_depleted",
+                                  "Stranded RNA-Seq"           = "stranded",
+                                  "Unstranded"                 = "unstranded"),
+                      selected = "polyA"),
+          selectInput("proteog_strand_flag", "Strand",
+                      choices = c("Reverse stranded (TruSeq, --rf)" = "--rf",
+                                  "Forward stranded (--fr)"          = "--fr",
+                                  "Unstranded ()"                    = ""),
+                      selected = "--rf")
+        ),
+        textInput("proteog_project_name", "Project name",
+                  placeholder = "e.g. mouse_liver_pilot_2026_05",
+                  width = "100%"),
+        textInput("proteog_project_tag", "Project tag (uppercase, suffixes FASTA symbols)",
+                  placeholder = "e.g. MOUSELIVER",
+                  width = "100%"),
+        numericInput("proteog_min_orf_len", "Minimum ORF length (aa)",
+                     value = 100, min = 30, max = 300, step = 10, width = "50%")
+      )
+    ),
+
+    # ── Step 5: Submit ──────────────────────────────────────────────────────
+    bslib::card(
+      bslib::card_header(tagList(icon("rocket"), " 5. Submit")),
+      bslib::card_body(
+        uiOutput("proteog_submit_warnings"),
+        actionButton("proteog_submit_btn", "Build Proteogenomics FASTA",
+                     icon = icon("dna"),
+                     class = "btn-success btn-lg w-100"),
+        helpText("Estimated wall time: 3-6 hours for 12 samples × 30M PE150 reads. ",
+                 "You can close the browser; the build continues on Hive.")
+      )
+    ),
+
+    # ── Active builds table ─────────────────────────────────────────────────
+    bslib::card(
+      bslib::card_header(tagList(icon("list-check"), " Active & recent builds")),
+      bslib::card_body(uiOutput("proteog_active_builds_table"))
+    )
+  )
+}
+
+#' Shiny server module for the Build Database tab
+#'
+#' Wires the UI inputs to:
+#'   - load_reference_registry() / load_proteog_registry() for dropdowns
+#'   - scan_slims_url() / verify_sra_accession() for Step 1 verify
+#'   - submit_proteogenomics_build() for the submit button
+#'   - reactivePoll on status.json files for the active-builds table
+server_proteog_builder <- function(input, output, session, values) {
+
+  ns <- session$ns %||% function(x) x  # tolerant of being called inside a moduleServer or not
+
+  # ── render the Build Database body via uiOutput("build_database_content") ──
+  output$build_database_content <- renderUI({ build_database_ui() })
+
+  # ── populate reference dropdown from registry ──────────────────────────────
+  observe({
+    reg <- tryCatch(load_reference_registry(), error = function(e) list())
+    if (length(reg) == 0) {
+      updateSelectInput(session, "proteog_reference_key",
+                        choices = c("No references registered" = ""))
+      return()
+    }
+    labels <- vapply(names(reg), function(k) {
+      e <- reg[[k]]
+      sprintf("%s — %s %s", k,
+              e$organism %||% "?",
+              e$annotation_release %||% e$annotation_source %||% "")
+    }, character(1), USE.NAMES = FALSE)
+    choices <- setNames(names(reg), labels)
+    updateSelectInput(session, "proteog_reference_key", choices = choices)
+  })
+
+  output$proteog_reference_info <- renderUI({
+    req(input$proteog_reference_key, nzchar(input$proteog_reference_key))
+    reg <- load_reference_registry()
+    entry <- reg[[input$proteog_reference_key]]
+    if (is.null(entry)) return(NULL)
+    tags$div(
+      style = "background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 0.85em;",
+      tags$div(strong("Genome FASTA:"), code(entry$genome_fasta %||% "(none)")),
+      tags$div(strong("STAR index:"),   code(entry$star_index %||% "(none)")),
+      tags$div(strong("GTF:"),          code(entry$gtf %||% "(none)")),
+      tags$div(strong("rRNA index:"),   code(entry$rrna_index %||% "(none)")),
+      tags$div(strong("Completeness:"), entry$completeness %||% "(unknown)")
+    )
+  })
+
+  # ── Step 1: Scan / verify ────────────────────────────────────────────────
+  # Stored in a reactiveVal so the UI in Step 2 can render it after the user
+  # clicks Scan, and the submit handler can read it back to populate sample
+  # names without re-fetching.
+  scan_result <- reactiveVal(NULL)
+
+  observeEvent(input$proteog_scan_btn, {
+    if (input$proteog_source_mode == "slims") {
+      url <- trimws(input$proteog_slims_url %||% "")
+      if (!nzchar(url)) {
+        scan_result(list(success = FALSE,
+                         error = "Please enter a SLIMS URL."))
+        return()
+      }
+      withProgress(message = "Scanning SLIMS URL…", value = 0.5, {
+        res <- tryCatch(scan_slims_url(url),
+                        error = function(e) list(success = FALSE,
+                                                 error = conditionMessage(e)))
+      })
+      res$mode <- "slims"
+      scan_result(res)
+    } else {
+      raw <- input$proteog_sra_accessions %||% ""
+      accs <- trimws(strsplit(raw, "[,;[:space:]]+")[[1]])
+      accs <- accs[nzchar(accs)]
+      if (length(accs) == 0) {
+        scan_result(list(success = FALSE,
+                         error = "Please enter at least one SRA/ENA accession."))
+        return()
+      }
+      if (length(accs) > 24) {
+        scan_result(list(success = FALSE,
+                         error = sprintf("Too many accessions (%d > 24).",
+                                         length(accs))))
+        return()
+      }
+      withProgress(message = "Verifying ENA metadata…", value = 0, {
+        per_acc <- lapply(seq_along(accs), function(i) {
+          incProgress(1 / length(accs), detail = accs[i])
+          verify_sra_accession(accs[i])
+        })
+      })
+      n_bad <- sum(!vapply(per_acc, function(r) isTRUE(r$success), logical(1)))
+      scan_result(list(
+        success = n_bad == 0,
+        mode = "sra",
+        accessions = accs,
+        per_acc = per_acc,
+        sample_names = accs,
+        error = if (n_bad > 0) sprintf("%d accession(s) failed verification.", n_bad) else NULL
+      ))
+    }
+  })
+
+  output$proteog_scan_output <- renderUI({
+    res <- scan_result()
+    if (is.null(res)) {
+      return(helpText("Click ", strong("Scan / Verify"),
+                      " after filling in a source above."))
+    }
+    if (!isTRUE(res$success)) {
+      return(tags$div(class = "alert alert-danger",
+                      tags$strong("Error: "), res$error %||% "Unknown error."))
+    }
+    if (identical(res$mode, "slims")) {
+      tagList(
+        tags$div(class = "alert alert-success",
+                 sprintf("SLIMS URL OK. %d samples (%s).",
+                         res$n_samples,
+                         if (isTRUE(res$is_paired)) "paired-end" else "single-end")),
+        tags$details(
+          tags$summary(sprintf("Sample list (%d)", length(res$sample_names))),
+          tags$ul(lapply(res$sample_names, function(s) tags$li(code(s))))
+        )
+      )
+    } else {
+      # SRA mode — show per-accession metadata
+      rows <- lapply(res$per_acc, function(r) {
+        if (!isTRUE(r$success)) {
+          return(tags$tr(tags$td(code(r$accession %||% "?")),
+                         tags$td(colspan = 4,
+                                 tags$span(style="color:#c62828;", r$error))))
+        }
+        tags$tr(
+          tags$td(code(r$accession)),
+          tags$td(r$scientific_name %||% "?"),
+          tags$td(r$library_strategy %||% "?",
+                  if (!isTRUE(r$suitable))
+                    tags$span(style = "color:#c62828; font-weight:bold;",
+                              " ⚠ unsuitable")),
+          tags$td(r$instrument %||% "?"),
+          tags$td(r$layout %||% "?")
+        )
+      })
+      tagList(
+        tags$table(class = "table table-sm",
+                   tags$thead(tags$tr(
+                     tags$th("Accession"), tags$th("Species"),
+                     tags$th("Library"), tags$th("Instrument"), tags$th("Layout")
+                   )),
+                   tags$tbody(rows))
+      )
+    }
+  })
+
+  # ── Pre-submit warnings + button enable/disable ─────────────────────────────
+  output$proteog_submit_warnings <- renderUI({
+    warnings <- character()
+    res <- scan_result()
+    if (is.null(res) || !isTRUE(res$success)) {
+      warnings <- c(warnings, "Run Scan / Verify before submitting.")
+    }
+    if (!nzchar(input$proteog_reference_key %||% "")) {
+      warnings <- c(warnings, "Select a reference genome.")
+    }
+    if (!nzchar(input$proteog_project_name %||% "")) {
+      warnings <- c(warnings, "Enter a project name.")
+    }
+    if (!nzchar(input$proteog_project_tag %||% "")) {
+      warnings <- c(warnings, "Enter a project tag.")
+    }
+    # Species mismatch check (SRA mode only)
+    if (!is.null(res) && identical(res$mode, "sra") &&
+        nzchar(input$proteog_reference_key %||% "")) {
+      reg <- load_reference_registry()
+      ref_org <- reg[[input$proteog_reference_key]]$organism %||% ""
+      accs_orgs <- vapply(res$per_acc,
+        function(r) if (isTRUE(r$success)) r$scientific_name %||% "" else "",
+        character(1))
+      mismatched <- accs_orgs[nzchar(accs_orgs) & accs_orgs != ref_org]
+      if (length(mismatched) > 0) {
+        warnings <- c(warnings, sprintf(
+          "Species mismatch: reference is %s; accessions report %s.",
+          ref_org, paste(unique(mismatched), collapse = ", ")))
+      }
+    }
+    if (length(warnings) == 0) return(NULL)
+    tags$div(class = "alert alert-warning",
+             tags$strong("Cannot submit yet:"),
+             tags$ul(lapply(warnings, tags$li)))
+  })
+
+  # ── Submit handler ──────────────────────────────────────────────────────────
+  observeEvent(input$proteog_submit_btn, {
+    res <- scan_result()
+    req(res, isTRUE(res$success))
+    req(nzchar(input$proteog_reference_key %||% ""))
+    req(nzchar(input$proteog_project_name %||% ""))
+    req(nzchar(input$proteog_project_tag  %||% ""))
+
+    # Download data (login-node nohup) if SLIMS mode and not already downloaded.
+    # For SRA mode the orchestrator can drive a stream-subsample sbatch.
+    # For Phase D v1 we DEFER the download orchestration — assume the data is
+    # already at the expected rnaseq_dir if user clicks submit. The next
+    # iteration will gate the submit on a completed download.
+    rnaseq_dir <- tryCatch({
+      if (identical(res$mode, "slims")) {
+        d <- launch_slims_download(res$url,
+                                   sanitize_project_name(input$proteog_project_name))
+        d$project_dir
+      } else {
+        d <- launch_ena_download(res$accessions,
+                                 sanitize_project_name(input$proteog_project_name),
+                                 subsample_reads = if (isTRUE(input$proteog_subsample))
+                                                     5e6L else NULL)
+        d$project_dir
+      }
+    }, error = function(e) {
+      showNotification(sprintf("Download launch failed: %s",
+                               conditionMessage(e)),
+                       type = "error", duration = 10)
+      NULL
+    })
+    req(rnaseq_dir)
+
+    showNotification(
+      tags$div(
+        tags$p(strong("Download started"),
+               " — the SLURM pipeline will be submitted once data is present."),
+        tags$p("You can close the browser; build continues on Hive."),
+        tags$p(tags$code(rnaseq_dir))),
+      type = "message", duration = 10
+    )
+
+    # Stash the build request so a downstream observer can submit
+    # submit_proteogenomics_build() once the download status.json reports
+    # state=="complete". For Phase D v1, we ALSO emit the call immediately
+    # — the download poll-and-submit observer can be added in Phase E.
+    tryCatch({
+      build <- submit_proteogenomics_build(
+        project_name    = sanitize_project_name(input$proteog_project_name),
+        rnaseq_dir      = rnaseq_dir,
+        reference_key   = input$proteog_reference_key,
+        sample_names    = res$sample_names %||% character(0),
+        library_type    = input$proteog_library_type,
+        strand_flag     = input$proteog_strand_flag,
+        project_tag     = input$proteog_project_tag,
+        min_orf_len     = as.integer(input$proteog_min_orf_len %||% 100L),
+        slurm_account   = "genome-center-grp",
+        slurm_partition = "high"
+      )
+      # Track in reactiveValues so the active builds table can poll
+      jobs <- values$proteog_build_jobs %||% list()
+      jobs[[length(jobs) + 1L]] <- list(
+        project_name = sanitize_project_name(input$proteog_project_name),
+        project_dir  = build$project_dir,
+        submitted_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+        jids_by_stage = build$jids_by_stage,
+        methods_paragraph = build$methods_paragraph
+      )
+      values$proteog_build_jobs <- jobs
+      showNotification(sprintf("Build submitted: %s",
+                               sanitize_project_name(input$proteog_project_name)),
+                       type = "default", duration = 8)
+    }, error = function(e) {
+      showNotification(sprintf("Submit failed: %s", conditionMessage(e)),
+                       type = "error", duration = 15)
+    })
+  })
+
+  # ── Active builds table — polls status.json every 15 s ──────────────────────
+  proteog_status_poll <- reactivePoll(
+    intervalMillis = 15000,
+    session = session,
+    checkFunc = function() {
+      jobs <- values$proteog_build_jobs %||% list()
+      if (length(jobs) == 0) return("")
+      paths <- vapply(jobs, function(j) file.path(j$project_dir, "status.json"),
+                       character(1))
+      paste(vapply(paths, function(p) {
+        if (file.exists(p)) as.character(file.mtime(p)) else "MISSING"
+      }, character(1)), collapse = "|")
+    },
+    valueFunc = function() {
+      jobs <- values$proteog_build_jobs %||% list()
+      lapply(jobs, function(j) {
+        tryCatch(poll_proteog_build_status(j$project_dir),
+                 error = function(e) NULL)
+      })
+    }
+  )
+
+  output$proteog_active_builds_table <- renderUI({
+    statuses <- proteog_status_poll()
+    if (length(statuses) == 0) {
+      return(helpText("No builds submitted in this session yet."))
+    }
+    rows <- lapply(seq_along(statuses), function(i) {
+      st <- statuses[[i]]
+      if (is.null(st)) return(NULL)
+      current <- st$current_stage %||% "?"
+      badge_color <- switch(current,
+        "complete" = "#27ae60",
+        "failed"   = "#c0392b",
+        "#f39c12")
+      done <- sum(vapply(st$stages,
+        function(s) identical(s$status, "complete"), logical(1)))
+      total <- length(st$stages)
+      tags$tr(
+        tags$td(st$project_name %||% "?"),
+        tags$td(tags$span(style = sprintf("background:%s; color:white; padding:2px 8px; border-radius:4px;",
+                                           badge_color),
+                          current)),
+        tags$td(sprintf("%d / %d", done, total)),
+        tags$td(st$submitted_at %||% "?"),
+        tags$td(code(basename(st$project_dir %||% "")))
+      )
+    })
+    tags$table(class = "table table-sm",
+               tags$thead(tags$tr(
+                 tags$th("Project"), tags$th("Stage"),
+                 tags$th("Progress"), tags$th("Submitted"),
+                 tags$th("Dir")
+               )),
+               tags$tbody(rows))
+  })
+
+  invisible(NULL)
+}
