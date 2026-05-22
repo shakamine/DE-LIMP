@@ -489,26 +489,40 @@ build_database_ui <- function() {
     # ── Header
     div(
       style = "background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;",
-      h4(icon("dna"), " Build Proteogenomics Database",
+      h4(icon("dna"), " Proteogenomics — Build a sample-specific search database",
          style = "margin: 0; color: #1b5e20;"),
-      p("Construct a sample-specific FASTA from matched RNA-seq data. The output ",
-        "appears in the Run Search FASTA dropdown with a \U0001F9EC tag.",
+      p("Convert matched RNA-seq into a custom FASTA that contains your samples' ",
+        "novel ORFs alongside the canonical reference proteome. The result appears ",
+        "in the Run Search FASTA dropdown with a \U0001F9EC tag.",
         style = "margin: 4px 0 0 0; color: #2e7d32; font-size: 0.9em;")
     ),
 
+    # Helper: card header with a "?" info button on the right
+    # local helper so we don't pollute the global namespace
+    # (Shiny's `tagList` is fine here; bslib::card_header accepts arbitrary content)
+
     # ── Step 1: Source ──────────────────────────────────────────────────────
     bslib::card(
-      bslib::card_header(tagList(icon("upload"), " 1. RNA-seq Source")),
+      bslib::card_header(div(
+        style = "display: flex; align-items: center; justify-content: space-between;",
+        div(icon("upload"), " 1. RNA-seq Source"),
+        actionButton("proteog_step1_info_btn", icon("question-circle"),
+                     class = "btn-outline-info btn-sm",
+                     title = "What does this step do?")
+      )),
       bslib::card_body(
         radioButtons("proteog_source_mode", NULL,
-                     choices = c("DNA Tech Core SLIMS URL" = "slims",
-                                 "SRA/ENA accession(s)"    = "sra"),
-                     selected = "slims", inline = TRUE),
+                     choices = c("UC Davis DNA Tech Core (SLIMS URL)" = "slims",
+                                 "Public archive (SRA/ENA accession)"  = "sra",
+                                 "Folder of FASTQ files on the cluster" = "local"),
+                     selected = "slims", inline = FALSE),
         conditionalPanel(
           "input.proteog_source_mode == 'slims'",
           textInput("proteog_slims_url", "SLIMS URL",
                     placeholder = "http://slimsdata.genomecenter.ucdavis.edu/Data/<id>/Unaligned/",
-                    width = "100%")
+                    width = "100%"),
+          helpText("For UC Davis users only. Paste the URL you received in your ",
+                   "DNA Tech Core delivery email.")
         ),
         conditionalPanel(
           "input.proteog_source_mode == 'sra'",
@@ -517,7 +531,20 @@ build_database_ui <- function() {
                     width = "100%"),
           checkboxInput("proteog_subsample",
                         "Stream-subsample to 5M read pairs per accession (fast test)",
-                        value = FALSE)
+                        value = FALSE),
+          helpText("Use for re-analysis of published datasets or external SRA data. ",
+                   "The pipeline streams FASTQs directly from ENA — no setup required.")
+        ),
+        conditionalPanel(
+          "input.proteog_source_mode == 'local'",
+          textInput("proteog_local_dir", "Directory path (on the cluster filesystem)",
+                    placeholder = "/quobyte/proteomics-grp/myproject/rnaseq/",
+                    width = "100%"),
+          helpText("For data you already have on the cluster — from another sequencing ",
+                   "core, a public download, or a collaborator. The folder must contain ",
+                   "paired FASTQ files named ", tags$code("<sample>_R1.fastq.gz"), " / ",
+                   tags$code("<sample>_R2.fastq.gz"), ". The Scan button below will list ",
+                   "the samples it finds.")
         ),
         actionButton("proteog_scan_btn", "Scan / Verify",
                      icon = icon("magnifying-glass"),
@@ -527,13 +554,25 @@ build_database_ui <- function() {
 
     # ── Step 2: Scan / verification results ─────────────────────────────────
     bslib::card(
-      bslib::card_header(tagList(icon("clipboard-check"), " 2. Sample Verification")),
+      bslib::card_header(div(
+        style = "display: flex; align-items: center; justify-content: space-between;",
+        div(icon("clipboard-check"), " 2. Sample Verification"),
+        actionButton("proteog_step2_info_btn", icon("question-circle"),
+                     class = "btn-outline-info btn-sm",
+                     title = "What is being verified?")
+      )),
       bslib::card_body(uiOutput("proteog_scan_output"))
     ),
 
     # ── Step 3: Reference selection ─────────────────────────────────────────
     bslib::card(
-      bslib::card_header(tagList(icon("book-open"), " 3. Reference Genome")),
+      bslib::card_header(div(
+        style = "display: flex; align-items: center; justify-content: space-between;",
+        div(icon("book-open"), " 3. Reference Genome"),
+        actionButton("proteog_step3_info_btn", icon("question-circle"),
+                     class = "btn-outline-info btn-sm",
+                     title = "How do I pick the reference?")
+      )),
       bslib::card_body(
         selectInput("proteog_reference_key", "Reference",
                     choices = c("(scanning registry…)" = ""),
@@ -544,7 +583,13 @@ build_database_ui <- function() {
 
     # ── Step 4: Pipeline parameters ─────────────────────────────────────────
     bslib::card(
-      bslib::card_header(tagList(icon("sliders"), " 4. Parameters")),
+      bslib::card_header(div(
+        style = "display: flex; align-items: center; justify-content: space-between;",
+        div(icon("sliders"), " 4. Parameters"),
+        actionButton("proteog_step4_info_btn", icon("question-circle"),
+                     class = "btn-outline-info btn-sm",
+                     title = "What do these parameters mean?")
+      )),
       bslib::card_body(
         layout_columns(
           col_widths = c(6, 6),
@@ -573,7 +618,13 @@ build_database_ui <- function() {
 
     # ── Step 5: Submit ──────────────────────────────────────────────────────
     bslib::card(
-      bslib::card_header(tagList(icon("rocket"), " 5. Submit")),
+      bslib::card_header(div(
+        style = "display: flex; align-items: center; justify-content: space-between;",
+        div(icon("rocket"), " 5. Submit"),
+        actionButton("proteog_step5_info_btn", icon("question-circle"),
+                     class = "btn-outline-info btn-sm",
+                     title = "What happens when I click Submit?")
+      )),
       bslib::card_body(
         uiOutput("proteog_submit_warnings"),
         actionButton("proteog_submit_btn", "Build Proteogenomics FASTA",
@@ -586,7 +637,13 @@ build_database_ui <- function() {
 
     # ── Active builds table ─────────────────────────────────────────────────
     bslib::card(
-      bslib::card_header(tagList(icon("list-check"), " Active & recent builds")),
+      bslib::card_header(div(
+        style = "display: flex; align-items: center; justify-content: space-between;",
+        div(icon("list-check"), " Active & recent builds"),
+        actionButton("proteog_builds_info_btn", icon("question-circle"),
+                     class = "btn-outline-info btn-sm",
+                     title = "What do the stage names mean?")
+      )),
       bslib::card_body(uiOutput("proteog_active_builds_table"))
     )
   )
@@ -660,7 +717,55 @@ server_proteog_builder <- function(input, output, session, values) {
       })
       res$mode <- "slims"
       scan_result(res)
-    } else {
+
+    } else if (input$proteog_source_mode == "local") {
+      dir_path <- trimws(input$proteog_local_dir %||% "")
+      if (!nzchar(dir_path)) {
+        scan_result(list(success = FALSE,
+                         error = "Please enter a directory path."))
+        return()
+      }
+      if (!dir.exists(dir_path)) {
+        scan_result(list(success = FALSE,
+                         error = sprintf("Directory not found: %s. Check the path is accessible from the cluster.", dir_path)))
+        return()
+      }
+      # Look for paired FASTQs matching <sample>_R1.fastq.gz / <sample>_R2.fastq.gz
+      r1_files <- list.files(dir_path, pattern = "_R1\\.fastq\\.gz$", full.names = FALSE)
+      if (length(r1_files) == 0) {
+        scan_result(list(success = FALSE,
+                         error = sprintf(
+                           "No _R1.fastq.gz files in %s. The folder must contain paired FASTQ files named <sample>_R1.fastq.gz / <sample>_R2.fastq.gz.",
+                           dir_path)))
+        return()
+      }
+      sample_names <- sub("_R1\\.fastq\\.gz$", "", r1_files)
+      # Verify R2 exists for each
+      missing_r2 <- character()
+      for (s in sample_names) {
+        if (!file.exists(file.path(dir_path, sprintf("%s_R2.fastq.gz", s)))) {
+          missing_r2 <- c(missing_r2, s)
+        }
+      }
+      if (length(missing_r2) > 0) {
+        scan_result(list(success = FALSE,
+                         error = sprintf(
+                           "%d sample(s) missing matching _R2.fastq.gz: %s. The pipeline requires paired-end data.",
+                           length(missing_r2),
+                           paste(head(missing_r2, 5), collapse = ", "))))
+        return()
+      }
+      scan_result(list(
+        success = TRUE,
+        mode = "local",
+        local_dir = dir_path,
+        n_samples = length(sample_names),
+        sample_names = sample_names,
+        is_paired = TRUE,
+        has_md5 = file.exists(file.path(dir_path, "checksums.md5"))
+      ))
+
+    } else {  # SRA mode
       raw <- input$proteog_sra_accessions %||% ""
       accs <- trimws(strsplit(raw, "[,;[:space:]]+")[[1]])
       accs <- accs[nzchar(accs)]
@@ -789,39 +894,50 @@ server_proteog_builder <- function(input, output, session, values) {
     req(nzchar(input$proteog_project_name %||% ""))
     req(nzchar(input$proteog_project_tag  %||% ""))
 
-    # Download data (login-node nohup) if SLIMS mode and not already downloaded.
-    # For SRA mode the orchestrator can drive a stream-subsample sbatch.
-    # For Phase D v1 we DEFER the download orchestration — assume the data is
-    # already at the expected rnaseq_dir if user clicks submit. The next
-    # iteration will gate the submit on a completed download.
+    # Resolve the rnaseq_dir depending on source mode:
+    #   slims/sra → launch a login-node download, point at the project subdir
+    #   local     → use the user-provided directory directly, skip download
     rnaseq_dir <- tryCatch({
       if (identical(res$mode, "slims")) {
         d <- launch_slims_download(res$url,
                                    sanitize_project_name(input$proteog_project_name))
         d$project_dir
-      } else {
+      } else if (identical(res$mode, "sra")) {
         d <- launch_ena_download(res$accessions,
                                  sanitize_project_name(input$proteog_project_name),
                                  subsample_reads = if (isTRUE(input$proteog_subsample))
                                                      5e6L else NULL)
         d$project_dir
+      } else if (identical(res$mode, "local")) {
+        res$local_dir
+      } else {
+        stop("Unknown source mode: ", res$mode)
       }
     }, error = function(e) {
-      showNotification(sprintf("Download launch failed: %s",
+      showNotification(sprintf("Source resolution failed: %s",
                                conditionMessage(e)),
                        type = "error", duration = 10)
       NULL
     })
     req(rnaseq_dir)
 
-    showNotification(
-      tags$div(
-        tags$p(strong("Download started"),
-               " — the SLURM pipeline will be submitted once data is present."),
-        tags$p("You can close the browser; build continues on Hive."),
-        tags$p(tags$code(rnaseq_dir))),
-      type = "message", duration = 10
-    )
+    if (identical(res$mode, "local")) {
+      showNotification(
+        tags$div(
+          tags$p(strong("Submitting pipeline against on-cluster data…")),
+          tags$p(tags$code(rnaseq_dir))),
+        type = "message", duration = 8
+      )
+    } else {
+      showNotification(
+        tags$div(
+          tags$p(strong("Download started"),
+                 " — the SLURM pipeline will be submitted once data is present."),
+          tags$p("You can close the browser; build continues on Hive."),
+          tags$p(tags$code(rnaseq_dir))),
+        type = "message", duration = 10
+      )
+    }
 
     # Stash the build request so a downstream observer can submit
     # submit_proteogenomics_build() once the download status.json reports
@@ -914,6 +1030,208 @@ server_proteog_builder <- function(input, output, session, values) {
                  tags$th("Dir")
                )),
                tags$tbody(rows))
+  })
+
+  # ── Info modals ("?" buttons in each card header) ───────────────────────────
+  # Pattern matches existing DE-LIMP info modals (CLAUDE.md):
+  # actionButton(..._info_btn, icon("question-circle")) + observeEvent + showModal.
+
+  observeEvent(input$proteog_step1_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("upload"), " Step 1 — RNA-seq Source"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.9em; line-height: 1.7;",
+        tags$h6("Pick where your RNA-seq data lives"),
+        tags$ul(
+          tags$li(strong("DNA Tech Core (SLIMS URL):"),
+                  " For UC Davis users whose sequencing was done at the DNA Technologies Core. ",
+                  "Your delivery email contains a URL like ",
+                  tags$code("http://slimsdata.genomecenter.ucdavis.edu/Data/<id>/Unaligned/"),
+                  ". DE-LIMP will download all R1/R2 FASTQ files automatically + verify md5 checksums."),
+          tags$li(strong("Public archive (SRA/ENA):"),
+                  " For re-analyzing published datasets. Paste one or more accession IDs ",
+                  "(e.g., ", tags$code("SRR1303776"), "). DE-LIMP queries ENA for metadata ",
+                  "(species, library type) before download to catch mistakes like wrong-species ",
+                  "accessions. Use the ", strong("subsample"), " checkbox for a fast test on the ",
+                  "first 5 million read pairs."),
+          tags$li(strong("Folder on the cluster:"),
+                  " For data you already have on Hive — from another sequencing core, a ",
+                  "previous download, or a collaborator. Paste the full path to a directory ",
+                  "containing paired ", tags$code("<sample>_R1.fastq.gz"), " / ",
+                  tags$code("<sample>_R2.fastq.gz"), " files.")
+        ),
+        tags$h6("Then click Scan / Verify"),
+        p("The pipeline does basic checks before you submit anything heavy — wrong-species ",
+          "verification, missing R2 detection, etc. Catching this here saves ~30 minutes of ",
+          "wasted compute later."),
+        tags$h6("Unsuitable libraries the pipeline will refuse"),
+        p("Tag-Seq, miRNA-Seq, and other libraries that don't cover full transcripts can't ",
+          "be used for proteogenomics novel-ORF discovery. If ENA reports one of these ",
+          "for an accession, the Submit button stays disabled.")
+      )
+    ))
+  })
+
+  observeEvent(input$proteog_step2_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("clipboard-check"), " Step 2 — Sample Verification"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.9em; line-height: 1.7;",
+        tags$h6("What's being verified"),
+        tags$ul(
+          tags$li(strong("Sample count + pairing:"),
+                  " confirms every sample has both R1 and R2 (paired-end is required)."),
+          tags$li(strong("Species (SRA only):"),
+                  " ENA metadata is queried to confirm the organism. A common mistake is ",
+                  "assuming an accession is one species when it's actually another — the ",
+                  "validation that built DE-LIMP caught this exact bug with SRR1303776/77, ",
+                  "claimed to be K562 human but actually mouse."),
+          tags$li(strong("Library strategy (SRA only):"),
+                  " RNA-Seq, polyA, total RNA — these are all OK. Tag-Seq, miRNA-Seq, ",
+                  "Ribo-Seq, CLIP-Seq are flagged as unsuitable.")
+        ),
+        tags$h6("If verification fails"),
+        p("The Submit button (Step 5) will stay disabled until everything passes. The ",
+          "error message tells you what to fix. For species mismatches, change your reference ",
+          "selection in Step 3 to match the actual organism.")
+      )
+    ))
+  })
+
+  observeEvent(input$proteog_step3_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("book-open"), " Step 3 — Reference Genome"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.9em; line-height: 1.7;",
+        tags$h6("Pick the reference for your samples' organism"),
+        p("The dropdown is populated from a curated registry of pre-staged references ",
+          "(at ", tags$code("/quobyte/proteomics-grp/de-limp/references/registry.json"),
+          "). Each reference includes the genome FASTA, the STAR index, the GTF annotation, ",
+          "and the organism-specific rRNA filter sequences."),
+        tags$h6("Currently available"),
+        tags$ul(
+          tags$li(strong("Mus musculus (mm39/GRCm39):"),
+                  " GENCODE vM38 basic annotation. Full STAR index pre-built. Includes ",
+                  "mouse-specific rRNA filter."),
+          tags$li(strong("Homo sapiens (hg38/GRCh38.p14):"),
+                  " RefSeq annotation. Full STAR index pre-built. Includes human-specific ",
+                  "rRNA filter.")
+        ),
+        tags$h6("Adding new references"),
+        p("Need a non-mouse, non-human reference (e.g., zebrafish, fly, plant)? Talk to ",
+          "the Proteomics Core — staging a new reference is a one-time ~12 hour admin job ",
+          "(download genome + GTF, build STAR index, build rRNA bowtie2 index, register).")
+      )
+    ))
+  })
+
+  observeEvent(input$proteog_step4_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("sliders"), " Step 4 — Parameters"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.9em; line-height: 1.7;",
+        tags$h6("Library type"),
+        tags$ul(
+          tags$li(strong("polyA mRNA-Seq:"), " standard mRNA-seq, polyA enriched. Most common."),
+          tags$li(strong("Total RNA + rRNA depletion:"), " captures non-coding RNAs too. ",
+                  "Preferred for proteogenomics because it captures more lincRNA and small ORF transcripts."),
+          tags$li(strong("Stranded RNA-Seq:"), " directional library, tells the aligner which ",
+                  "strand was transcribed.")
+        ),
+        tags$h6("Strand"),
+        p("If you know your library prep kit, pick the right one:"),
+        tags$ul(
+          tags$li(strong("--rf (reverse stranded):"),
+                  " TruSeq Stranded, Illumina Stranded mRNA. Most common in 2024+."),
+          tags$li(strong("--fr (forward stranded):"),
+                  " older prep kits, Lexogen QuantSeq 3' FWD."),
+          tags$li(strong("Unstranded:"), " older non-stranded protocols (rare in 2024+).")
+        ),
+        p("If you're not sure, ", strong("--rf"), " is the right guess. The aligner is forgiving ",
+          "of mis-specified strand; you'll lose ~10% of transcripts in the worst case."),
+        tags$h6("Project name"),
+        p("Short identifier for this build, e.g., ", tags$code("mouse_liver_pilot_2026_05"), ". ",
+          "Used as the output directory name. Allowed: letters, numbers, dots, dashes, underscores."),
+        tags$h6("Project tag"),
+        p("An UPPERCASE tag suffixed to every predicted-protein symbol so they're traceable ",
+          "back to which build produced them, e.g., ", tags$code("Gnai3_MOUSELIVER"),
+          " instead of ", tags$code("Gnai3"),
+          ". Keep it short — it shows up in every header."),
+        tags$h6("Minimum ORF length"),
+        p("TransDecoder won't predict ORFs shorter than this. Default 100 aa is the field ",
+          "standard for novel-ORF discovery. Lowering to 50-70 aa picks up small ORFs (sORFs, ",
+          "uORFs) at the cost of more false positives.")
+      )
+    ))
+  })
+
+  observeEvent(input$proteog_step5_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("rocket"), " Step 5 — Submit"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.9em; line-height: 1.7;",
+        tags$h6("What happens when you click Build"),
+        tags$ol(
+          tags$li(strong("Download (if SLIMS / SRA mode):"),
+                  " a background process on the login node fetches your FASTQ files. ",
+                  "Status appears under Active Builds below."),
+          tags$li(strong("SLURM dependency chain (10 jobs):"),
+                  " once data is on disk, the pipeline submits as 10 sbatch jobs with ",
+                  tags$code("--dependency=afterok"), " chaining: fastp → bowtie2 rRNA filter → ",
+                  "STAR → QC gate → stringtie → merge → gffcompare → gffread → ",
+                  "TransDecoder → header rewrite."),
+          tags$li(strong("Quality gates fire automatically:"),
+                  " if the STAR uniquely-mapped rate is below threshold (25% for short reads, ",
+                  "60% for ≥130bp reads), the chain halts and surfaces the cause to you. ",
+                  "Doesn't silently produce bad data."),
+          tags$li(strong("Final FASTA assembly:"),
+                  " predicted ORFs + UniProt reference + contaminants → one FASTA, deduplicated."),
+          tags$li(strong("Registry:"),
+                  " the resulting FASTA appears in the Run Search FASTA dropdown with a ",
+                  HTML("&#x1F9EC;"), " tag and composition breakdown.")
+        ),
+        tags$h6("Wall time"),
+        p("Roughly 3-6 hours for 12 samples × 30M PE150 reads on the ", tags$code("high"),
+          " partition. You can close the browser; the chain continues on Hive. ",
+          "Check back via the Active Builds table below or the Output tab when complete."),
+        tags$h6("What if it fails midway"),
+        p("Every stage writes its own log under ", tags$code("logs/"),
+          " in the project directory. The Active Builds table shows which stage failed. ",
+          "Most failures are recoverable by re-running just the failed step — see the ",
+          strong("Output"), " tab for resume options.")
+      )
+    ))
+  })
+
+  observeEvent(input$proteog_builds_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("list-check"), " Pipeline Stages"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.9em; line-height: 1.7;",
+        tags$h6("The 10 stages, in order"),
+        tags$ol(
+          tags$li(strong("fastp:"), " adapter trimming + quality filter. Detects read length to drive STAR threshold tier selection. ~5 min/sample, parallel array."),
+          tags$li(strong("rrna_filter:"), " bowtie2 against organism-specific rRNA sequences. Reads NOT matching rRNA proceed to STAR. ~5 min/sample, parallel array."),
+          tags$li(strong("star:"), " spliced alignment to the reference genome. ~10 min/sample on 16 cores. Highest memory use (~48 GB). Parallel array."),
+          tags$li(strong("qc_gate:"), " checks STAR uniquely-mapped rate against tier threshold (25% / 45% / 60% based on read length). HALTS the chain if below — never produces a partial bad FASTA."),
+          tags$li(strong("stringtie:"), " per-sample transcript assembly using STAR BAMs + reference GTF for guidance. ~1 min/sample, parallel array."),
+          tags$li(strong("merge:"), " combines per-sample GTFs into a unified transcript model. ~1 min."),
+          tags$li(strong("gffcompare:"), " classifies merged transcripts vs the reference annotation. This is what distinguishes REF (annotated) from NOVEL_ISOFORM (alternative splicing) from NOVEL_GENE (intergenic). ~30 sec."),
+          tags$li(strong("gffread:"), " extracts transcript-level FASTA sequences from the genome FASTA + merged GTF. ~30 sec."),
+          tags$li(strong("transdecoder:"), " predicts ORFs from transcripts. Longest single stage (~20 min) because it runs TransDecoder.LongOrfs + TransDecoder.Predict with start-codon refinement."),
+          tags$li(strong("rewrite:"), " converts TransDecoder's idiosyncratic headers into the DE-LIMP ",
+                  tags$code("sp|ID|SYM_TAG source=... ORF_type=..."),
+                  " format. Fails non-zero if any UNPARSED entries are produced. ~1 min.")
+        ),
+        tags$h6("Stage states in the table"),
+        tags$ul(
+          tags$li(tags$span(style="background:#f39c12;color:white;padding:2px 8px;border-radius:4px;","pending"), " — submitted to SLURM, waiting for a node"),
+          tags$li(tags$span(style="background:#f39c12;color:white;padding:2px 8px;border-radius:4px;","running"), " — actively executing"),
+          tags$li(tags$span(style="background:#27ae60;color:white;padding:2px 8px;border-radius:4px;","complete"), " — succeeded; downstream stages will run"),
+          tags$li(tags$span(style="background:#c0392b;color:white;padding:2px 8px;border-radius:4px;","failed"), " — non-zero exit; downstream stages will NOT run (afterok dependency holds them)")
+        )
+      )
+    ))
   })
 
   invisible(NULL)

@@ -1081,11 +1081,13 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
       ),  # close Run Search nav_panel
 
       # ------------------------------------------------------------------------
-      # Sub-panel: Build Database 🧬 — proteogenomics RNA-seq → FASTA pipeline
+      # Sub-panel: Proteogenomics 🧬 — RNA-seq → FASTA pipeline
       # HPC-only (needs sbatch). On Docker-only or HF, the panel is hidden.
+      # Internal value="build_database_tab" preserved for back-compat with the
+      # protected tab-values list in CLAUDE.md.
       # ------------------------------------------------------------------------
       if (hpc_available && !is_hf_space) nav_panel(
-        tags$span("Build Database ", tags$span("\U0001F9EC", style = "font-size: 0.9em;")),
+        tags$span("Proteogenomics ", tags$span("\U0001F9EC", style = "font-size: 0.9em;")),
         value = "build_database_tab", icon = icon("dna"),
         uiOutput("build_database_content")
       )
