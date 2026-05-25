@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-05-18 11:39:16",
+  "generated_at": "2026-05-25 11:46:58",
   "github": {
     "repo": null,
     "stars": 7,
     "forks": 1,
     "open_issues": 1,
     "traffic_14d": {
-      "clones": 1578,
-      "clones_unique": 340,
-      "views": 150,
-      "views_unique": 25
+      "clones": 272,
+      "clones_unique": 108,
+      "views": 114,
+      "views_unique": 32
     },
     "release_downloads_all_time": 0,
     "per_release": []
