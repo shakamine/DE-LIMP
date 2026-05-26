@@ -245,15 +245,40 @@ count_proteog_classes <- function(fasta_path) {
 #'
 #' Empty/missing registry returns `list()`. Never throws — callers handle
 #' an empty registry gracefully (no databases registered yet).
-load_proteog_registry <- function() {
+#'
+#' When `ssh_config` is non-NULL, fetches via `ssh_exec("cat <path>")`
+#' rather than local filesystem read (same SSH-aware pattern as
+#' `load_reference_registry()`).
+#'
+#' @param ssh_config NULL (local) or ssh_config list (remote via ssh_exec)
+load_proteog_registry <- function(ssh_config = NULL) {
   path <- .proteog_registry_path()
-  if (!file.exists(path)) return(list())
-  raw <- tryCatch(jsonlite::read_json(path), error = function(e) NULL)
-  if (is.null(raw)) {
-    warning("load_proteog_registry(): could not parse ", path, " — returning empty registry")
+
+  raw <- if (!is.null(ssh_config) && exists("ssh_exec")) {
+    res <- tryCatch(
+      ssh_exec(ssh_config, sprintf("cat %s", shQuote(path)),
+               login_shell = FALSE, timeout = 15),
+      error = function(e) NULL
+    )
+    if (is.null(res) || !identical(res$status, 0L) ||
+        length(res$stdout) == 0) {
+      return(list())
+    }
+    paste(res$stdout, collapse = "\n")
+  } else {
+    if (!file.exists(path)) return(list())
+    tryCatch(paste(readLines(path, warn = FALSE), collapse = "\n"),
+             error = function(e) NULL)
+  }
+
+  if (is.null(raw) || !nzchar(raw)) return(list())
+  parsed <- tryCatch(jsonlite::fromJSON(raw, simplifyVector = FALSE),
+                     error = function(e) NULL)
+  if (is.null(parsed)) {
+    warning("load_proteog_registry(): could not parse registry at ", path)
     return(list())
   }
-  if (length(raw) == 0) list() else raw
+  if (length(parsed) == 0) list() else parsed
 }
 
 #' Write the proteogenomics-database registry from a named list

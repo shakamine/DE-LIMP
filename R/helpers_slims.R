@@ -30,16 +30,42 @@ if (!exists("%||%")) {
 #' Load the reference-genomes registry as a named list
 #'
 #' Empty/missing registry returns `list()`. Never throws.
+#'
+#' When `ssh_config` is non-NULL and the user is connected to Hive,
+#' fetches the registry via `ssh_exec("cat <path>")` instead of a local
+#' filesystem read. This is how DE-LIMP-on-Mac with SSH-to-Hive picks
+#' up the registry on /quobyte/.
+#'
+#' @param ssh_config NULL (local read) OR ssh_config list with $host/$user/$key
 #' @return named list keyed by reference_key (e.g. "mm39_GRCm39")
-load_reference_registry <- function() {
+load_reference_registry <- function(ssh_config = NULL) {
   path <- .reference_registry_path()
-  if (!file.exists(path)) return(list())
-  raw <- tryCatch(jsonlite::read_json(path), error = function(e) NULL)
-  if (is.null(raw)) {
-    warning("load_reference_registry(): could not parse ", path)
+
+  raw <- if (!is.null(ssh_config) && exists("ssh_exec")) {
+    res <- tryCatch(
+      ssh_exec(ssh_config, sprintf("cat %s", shQuote(path)),
+               login_shell = FALSE, timeout = 15),
+      error = function(e) NULL
+    )
+    if (is.null(res) || !identical(res$status, 0L) ||
+        length(res$stdout) == 0) {
+      return(list())
+    }
+    paste(res$stdout, collapse = "\n")
+  } else {
+    if (!file.exists(path)) return(list())
+    tryCatch(paste(readLines(path, warn = FALSE), collapse = "\n"),
+             error = function(e) NULL)
+  }
+
+  if (is.null(raw) || !nzchar(raw)) return(list())
+  parsed <- tryCatch(jsonlite::fromJSON(raw, simplifyVector = FALSE),
+                     error = function(e) NULL)
+  if (is.null(parsed)) {
+    warning("load_reference_registry(): could not parse registry at ", path)
     return(list())
   }
-  raw
+  parsed
 }
 
 # =============================================================================
@@ -156,6 +182,10 @@ scan_slims_url <- function(slims_url, timeout_sec = 20L) {
 #' of wasted compute when an SRR claimed to be K562 human turned out to be
 #' Mus musculus. A 2-second metadata call would have caught it.
 #'
+#' Uses ENA's PORTAL API (returns plain TSV) instead of the BROWSER API (XML).
+#' The TSV endpoint is more robust across R/xml2 versions — no XML parsing,
+#' no encoding quirks — and lets us request exactly the fields we need.
+#'
 #' @param accession character — e.g., "SRR1303776"
 #' @param timeout_sec integer
 #' @return list with $success, $error (on failure), and on success:
@@ -171,7 +201,12 @@ verify_sra_accession <- function(accession, timeout_sec = 15L) {
     ))
   }
 
-  url <- sprintf("https://www.ebi.ac.uk/ena/browser/api/xml/%s", accession)
+  fields <- "run_accession,scientific_name,library_strategy,library_source,library_selection,instrument_model,library_layout"
+  url <- sprintf(
+    "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=%s&result=read_run&fields=%s&format=tsv",
+    accession, fields
+  )
+
   raw <- tryCatch({
     if (requireNamespace("httr2", quietly = TRUE)) {
       resp <- httr2::request(url) |>
@@ -185,9 +220,9 @@ verify_sra_accession <- function(accession, timeout_sec = 15L) {
     } else {
       stop("Neither httr2 nor httr available")
     }
-  }, error = function(e) NULL)
+  }, error = function(e) conditionMessage(e))
 
-  if (is.null(raw) || !nzchar(raw)) {
+  if (is.null(raw) || !is.character(raw) || !nzchar(raw)) {
     return(list(
       success = FALSE,
       error   = paste0("Could not reach ENA metadata API for ", accession,
@@ -195,34 +230,39 @@ verify_sra_accession <- function(accession, timeout_sec = 15L) {
     ))
   }
 
-  xml <- tryCatch(xml2::read_xml(raw), error = function(e) NULL)
-  if (is.null(xml)) {
+  lines <- strsplit(raw, "\n", fixed = TRUE)[[1]]
+  lines <- lines[nzchar(trimws(lines))]
+  if (length(lines) < 2) {
     return(list(
       success = FALSE,
-      error   = paste0("ENA returned non-XML response for ", accession,
-                       " (accession may not exist)")
+      error   = paste0("ENA returned no record for ", accession,
+                       " — accession may not exist, or may not have public reads yet.")
     ))
   }
 
-  .xt <- function(xpath) {
-    n <- xml2::xml_find_first(xml, xpath)
-    if (inherits(n, "xml_missing")) return(NA_character_)
-    txt <- xml2::xml_text(n)
-    if (!nzchar(txt)) NA_character_ else txt
+  header <- strsplit(lines[1], "\t", fixed = TRUE)[[1]]
+  fields_row <- strsplit(lines[2], "\t", fixed = TRUE)[[1]]
+  # Pad short rows so column indexing doesn't blow up on a truncated response
+  if (length(fields_row) < length(header)) {
+    fields_row <- c(fields_row, rep(NA_character_, length(header) - length(fields_row)))
+  }
+  rec <- setNames(as.list(fields_row), header)
+
+  .get <- function(k) {
+    v <- rec[[k]]
+    if (is.null(v) || is.na(v) || !nzchar(v)) NA_character_ else v
   }
 
-  scientific_name   <- .xt(".//SAMPLE/SAMPLE_NAME/SCIENTIFIC_NAME")
-  library_strategy  <- .xt(".//LIBRARY_STRATEGY")
-  library_source    <- .xt(".//LIBRARY_SOURCE")
-  library_selection <- .xt(".//LIBRARY_SELECTION")
-  instrument        <- .xt(".//INSTRUMENT_MODEL")
-  layout            <- if (length(xml2::xml_find_all(xml, ".//PAIRED")) > 0) {
-    "paired"
-  } else if (length(xml2::xml_find_all(xml, ".//SINGLE")) > 0) {
-    "single"
-  } else {
-    "unknown"
-  }
+  scientific_name   <- .get("scientific_name")
+  library_strategy  <- .get("library_strategy")
+  library_source    <- .get("library_source")
+  library_selection <- .get("library_selection")
+  instrument        <- .get("instrument_model")
+  layout_raw        <- .get("library_layout")
+  layout <- if (is.na(layout_raw)) "unknown"
+            else if (toupper(layout_raw) == "PAIRED") "paired"
+            else if (toupper(layout_raw) == "SINGLE") "single"
+            else tolower(layout_raw)
 
   is_unsuitable <- !is.na(library_strategy) &&
     library_strategy %in% .UNSUITABLE_LIBRARY_STRATEGIES

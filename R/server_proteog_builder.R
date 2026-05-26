@@ -574,9 +574,11 @@ build_database_ui <- function() {
                      title = "How do I pick the reference?")
       )),
       bslib::card_body(
-        selectInput("proteog_reference_key", "Reference",
-                    choices = c("(scanning registry…)" = ""),
-                    width = "100%"),
+        # Reference dropdown is rendered server-side via renderUI so its choices
+        # are populated from load_reference_registry() with full reactive
+        # context (the observe + updateSelectInput pattern raced renderUI on
+        # initial session start, leaving "scanning…" stuck visible).
+        uiOutput("proteog_reference_dropdown"),
         uiOutput("proteog_reference_info")
       )
     ),
@@ -660,17 +662,63 @@ server_proteog_builder <- function(input, output, session, values) {
 
   ns <- session$ns %||% function(x) x  # tolerant of being called inside a moduleServer or not
 
+  # ── Active SSH config for SSH-aware helpers ────────────────────────────────
+  # When the user has connected to Hive via the Run Search tab,
+  # `values$ssh_connected` is TRUE and the SSH inputs (input$ssh_host,
+  # input$ssh_user, input$ssh_port, input$ssh_key_path, input$ssh_modules)
+  # are populated. We re-construct the ssh_config list here rather than
+  # depend on a cross-module reactive — matches the construction used in
+  # `R/server_search.R:23` so the same connection state is reused.
+  proteog_ssh_config <- function() {
+    if (!isTRUE(values$ssh_connected)) return(NULL)
+    if (is.null(input$ssh_host) || !nzchar(input$ssh_host %||% "")) return(NULL)
+    list(
+      host     = input$ssh_host,
+      user     = input$ssh_user,
+      port     = input$ssh_port %||% 22,
+      key_path = input$ssh_key_path,
+      modules  = input$ssh_modules %||% ""
+    )
+  }
+
   # ── render the Build Database body via uiOutput("build_database_content") ──
   output$build_database_content <- renderUI({ build_database_ui() })
 
-  # ── populate reference dropdown from registry ──────────────────────────────
-  observe({
-    reg <- tryCatch(load_reference_registry(), error = function(e) list())
+  # ── render Reference Genome dropdown ────────────────────────────────────
+  # Uses renderUI rather than the observe+updateSelectInput pattern so the
+  # selectInput is built with the right choices at the moment the tab renders
+  # (the prior observe approach raced the parent renderUI and left the
+  # placeholder "scanning..." stuck visible).
+  output$proteog_reference_dropdown <- renderUI({
+    sc  <- proteog_ssh_config()
+    message(sprintf(
+      "[proteog] reference dropdown renderUI firing — ssh_connected=%s, sc_null=%s",
+      isTRUE(values$ssh_connected), is.null(sc)
+    ))
+    reg <- tryCatch(load_reference_registry(ssh_config = sc),
+                    error = function(e) {
+                      message("[proteog] load_reference_registry error: ",
+                              conditionMessage(e))
+                      list()
+                    })
+    message(sprintf("[proteog] registry length = %d", length(reg)))
+
     if (length(reg) == 0) {
-      updateSelectInput(session, "proteog_reference_key",
-                        choices = c("No references registered" = ""))
-      return()
+      msg <- if (is.null(sc)) {
+        "Connect to HPC from the Run Search tab to see references"
+      } else {
+        "No references registered (registry empty or unreachable)"
+      }
+      empty_choices <- setNames("", msg)
+      return(tagList(
+        selectInput("proteog_reference_key", "Reference",
+                    choices = empty_choices,
+                    selected = "",
+                    width = "100%"),
+        tags$small(style = "color:#c62828;", msg)
+      ))
     }
+
     labels <- vapply(names(reg), function(k) {
       e <- reg[[k]]
       sprintf("%s — %s %s", k,
@@ -678,12 +726,13 @@ server_proteog_builder <- function(input, output, session, values) {
               e$annotation_release %||% e$annotation_source %||% "")
     }, character(1), USE.NAMES = FALSE)
     choices <- setNames(names(reg), labels)
-    updateSelectInput(session, "proteog_reference_key", choices = choices)
+    selectInput("proteog_reference_key", "Reference",
+                choices = choices, width = "100%")
   })
 
   output$proteog_reference_info <- renderUI({
     req(input$proteog_reference_key, nzchar(input$proteog_reference_key))
-    reg <- load_reference_registry()
+    reg <- load_reference_registry(ssh_config = proteog_ssh_config())
     entry <- reg[[input$proteog_reference_key]]
     if (is.null(entry)) return(NULL)
     tags$div(
@@ -868,7 +917,7 @@ server_proteog_builder <- function(input, output, session, values) {
     # Species mismatch check (SRA mode only)
     if (!is.null(res) && identical(res$mode, "sra") &&
         nzchar(input$proteog_reference_key %||% "")) {
-      reg <- load_reference_registry()
+      reg <- load_reference_registry(ssh_config = proteog_ssh_config())
       ref_org <- reg[[input$proteog_reference_key]]$organism %||% ""
       accs_orgs <- vapply(res$per_acc,
         function(r) if (isTRUE(r$success)) r$scientific_name %||% "" else "",
