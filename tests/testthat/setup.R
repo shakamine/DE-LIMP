@@ -15,3 +15,10 @@ source(file.path(project_root, "R", "helpers_search.R"))
 
 # Load helpers_phospho.R (parse_phospho_positions)
 source(file.path(project_root, "R", "helpers_phospho.R"))
+
+# Load proteogenomics helpers (no Shiny reactivity; pure functions)
+source(file.path(project_root, "R", "helpers_proteogenomics.R"))
+source(file.path(project_root, "R", "helpers_proteog_assembly.R"))
+source(file.path(project_root, "R", "helpers_slims.R"))
+source(file.path(project_root, "R", "helpers_rnaseq.R"))
+source(file.path(project_root, "R", "helpers_proteog_qc.R"))

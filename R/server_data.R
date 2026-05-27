@@ -5,6 +5,39 @@
 
 server_data <- function(input, output, session, values, add_to_log, is_hf_space) {
 
+  # ----------------------------------------------------------------------------
+  # Proteogenomics classifier hook — called after every readDIANN() success
+  # to set values$is_proteogenomics + values$protein_classification.
+  #
+  # DIA-NN's report.parquet has its Protein.Group column under
+  # values$raw_data$genes after limpa::readDIANN(). The classifier reads
+  # Protein.Group accession structure as its primary signal and (when the
+  # FASTA used in the search is available at values$proteog_active_fasta)
+  # refines REF → NOVEL_ISOFORM via the FASTA's source= tags.
+  # ----------------------------------------------------------------------------
+  classify_loaded_proteins <- function() {
+    if (is.null(values$raw_data) || !exists("classify_proteins")) return(invisible())
+    cls <- tryCatch(
+      classify_proteins(values$raw_data, fasta_path = values$proteog_active_fasta),
+      error = function(e) {
+        message("[DE-LIMP] classify_proteins() failed: ", conditionMessage(e))
+        NULL
+      }
+    )
+    values$protein_classification <- cls
+    values$is_proteogenomics <- isTRUE(
+      !is.null(cls) && nrow(cls) > 0 &&
+      any(cls$source %in% c("REF", "NOVEL_GENE", "NOVEL_ISOFORM", "VARIANT"))
+    )
+    if (isTRUE(values$is_proteogenomics)) {
+      n_novel <- sum(cls$source %in% c("NOVEL_GENE", "NOVEL_ISOFORM"))
+      message(sprintf(
+        "[DE-LIMP] Proteogenomics session detected: %d non-canonical entries (%d novel)",
+        sum(cls$source != "UNIPROT"), n_novel
+      ))
+    }
+  }
+
   # ============================================================================
   #      2. Main Data Loading & Processing Pipeline
   # ============================================================================
@@ -29,6 +62,7 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
         # values. The filter sliders only take effect when MaxLFQ + limma runs.
         values$raw_data <- limpa::readDIANN(temp_file, format="parquet", q.cutoffs=input$q_cutoff)
         values$quantums_filter_applied <- character(0)
+        classify_loaded_proteins()
         fnames <- sort(colnames(values$raw_data$E))
         values$metadata <- data.frame(
           ID = 1:length(fnames),
@@ -118,6 +152,7 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
         # (build_maxlfq_pipeline). Load always reads the unfiltered parquet.
         values$raw_data <- limpa::readDIANN(input$report_file$datapath, format="parquet", q.cutoffs=input$q_cutoff)
         values$quantums_filter_applied <- character(0)
+        classify_loaded_proteins()
         gc(verbose = FALSE)  # free readDIANN intermediates
         message(sprintf("[DE-LIMP] Memory after readDIANN: %.0f MB used", sum(gc()[,2])))
         fnames <- sort(colnames(values$raw_data$E))

@@ -1118,6 +1118,25 @@ server_ai <- function(input, output, session, values) {
         writeLines(prompt, prompt_file)
         files_to_zip <- c(files_to_zip, prompt_file)
 
+        # Proteogenomics Glossary — copied into ZIP only when this is a
+        # proteogenomics session. The glossary explains REF / NOVEL_GENE /
+        # NOVEL_ISOFORM / VARIANT identifier conventions to Claude so it
+        # doesn't hallucinate functions for MSTRG.* accessions.
+        if (isTRUE(values$is_proteogenomics)) {
+          safe_section(manifest, "Proteogenomics_Glossary.txt", {
+            glossary_src <- file.path(
+              getwd(), "scripts", "proteogenomics_glossary.txt"
+            )
+            if (file.exists(glossary_src)) {
+              glossary_dst <- file.path(tmp_dir, "Proteogenomics_Glossary.txt")
+              file.copy(glossary_src, glossary_dst, overwrite = TRUE)
+              files_to_zip <<- c(files_to_zip, glossary_dst)
+            } else {
+              stop("glossary not staged at scripts/proteogenomics_glossary.txt")
+            }
+          })
+        }
+
         # Write the export manifest so reviewers can see what's in the ZIP and
         # what was skipped + why. (v3.9.15)
         manifest_path <- file.path(tmp_dir, "MANIFEST.txt")

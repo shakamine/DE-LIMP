@@ -475,9 +475,17 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
   # ============================================================================
 
     # ==========================================================================
-    # SEARCH (standalone, conditional) — visible when Docker or HPC backend available
+    # SEARCH dropdown — Run Search + Build Database (Phase D proteogenomics)
+    # When search_enabled, the navbar shows a "New Search" dropdown containing
+    # the existing search workflow plus, on HPC backends, a Build Database
+    # entry for the proteogenomics RNA-seq → FASTA pipeline.
     # ==========================================================================
-    if (search_enabled) nav_panel("New Search", icon = icon("rocket"),
+    if (search_enabled) nav_menu("New Search", icon = icon("rocket"),
+
+      # ------------------------------------------------------------------------
+      # Sub-panel: Run Search (existing DIA-NN workflow)
+      # ------------------------------------------------------------------------
+      nav_panel("Run Search", value = "search_tab", icon = icon("magnifying-glass"),
       # Three-panel wizard layout
       layout_column_wrap(
         width = 1/3,
@@ -549,6 +557,7 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
               choices = c("Download from UniProt" = "uniprot",
                           "Download from NCBI" = "ncbi",
                           "Database Library" = "library",
+                          "Proteogenomics DBs" = "proteogenomics",
                           "Pre-staged on server" = "prestaged",
                           "Browse / enter path" = "browse"),
               width = "100%"),
@@ -574,6 +583,13 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
               actionButton("open_fasta_library_modal", "Browse Speclib Library",
                 class = "btn-primary btn-sm w-100", icon = icon("bolt")),
               uiOutput("fasta_library_selected_summary")
+            ),
+
+            # --- Proteogenomics DB source ---
+            conditionalPanel("input.fasta_source == 'proteogenomics'",
+              actionButton("open_proteog_library_modal", "Browse Proteogenomics DBs",
+                class = "btn-primary btn-sm w-100", icon = icon("dna")),
+              uiOutput("proteog_library_selected_summary")
             ),
 
             # --- Pre-staged source ---
@@ -1070,7 +1086,21 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
           )
         )
       )
-    ),
+      ),  # close Run Search nav_panel
+
+      # ------------------------------------------------------------------------
+      # Sub-panel: Proteogenomics 🧬 — RNA-seq → FASTA pipeline
+      # HPC-only (needs sbatch). On Docker-only or HF, the panel is hidden.
+      # Internal value="build_database_tab" preserved for back-compat with the
+      # protected tab-values list in CLAUDE.md.
+      # ------------------------------------------------------------------------
+      if (hpc_available && !is_hf_space) nav_panel(
+        tags$span("Proteogenomics ", tags$span("\U0001F9EC", style = "font-size: 0.9em;")),
+        value = "build_database_tab", icon = icon("dna"),
+        uiOutput("build_database_content")
+      )
+
+    ),  # close New Search nav_menu
 
     # ==========================================================================
     # QC (standalone, merged from QC Trends + QC Plots)

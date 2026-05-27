@@ -576,20 +576,67 @@ ncbi_build_gene_map <- function(fasta_path, accessions = NULL) {
 }
 
 #' Scan a directory for pre-staged FASTA databases
+#'
+#' When a proteogenomics database registry exists at
+#' `/quobyte/proteomics-grp/de-limp/databases/proteogenomics/registry.json`
+#' (or wherever the `DELIMP_PROTEOG_REGISTRY` env var points), any FASTA
+#' file present in the registry is given a `🧬` prefix in the dropdown
+#' label and its composition breakdown is included for at-a-glance triage.
+#' Files NOT in the registry get a plain `◇` prefix.
+#'
 #' @param fasta_dir Character — path to scan
+#' @param proteog_registry_path optional — override registry path (mainly for tests)
 #' @return Named character vector suitable for selectInput choices
-scan_prestaged_databases <- function(fasta_dir) {
+scan_prestaged_databases <- function(fasta_dir,
+                                     proteog_registry_path = NULL) {
   if (!dir.exists(fasta_dir)) return(character())
 
   fasta_files <- list.files(fasta_dir, pattern = "\\.(fasta|fa)$",
                             ignore.case = TRUE, full.names = TRUE)
   if (length(fasta_files) == 0) return(character())
 
-  # Build display names from filenames
+  # Try to read the proteogenomics registry to enrich labels. Quiet failure
+  # — if the registry doesn't exist (Docker / HF / non-HPC), every FASTA
+  # falls back to plain naming.
+  reg_path <- proteog_registry_path %||% Sys.getenv(
+    "DELIMP_PROTEOG_REGISTRY",
+    unset = "/quobyte/proteomics-grp/de-limp/databases/proteogenomics/registry.json"
+  )
+  registry <- if (file.exists(reg_path)) {
+    tryCatch(jsonlite::read_json(reg_path), error = function(e) list())
+  } else list()
+
+  # Index registry by absolute path of the FASTA each entry refers to
+  registry_by_path <- list()
+  if (length(registry) > 0) {
+    for (k in names(registry)) {
+      e <- registry[[k]]
+      p <- e$path
+      if (!is.null(p) && nzchar(p)) registry_by_path[[p]] <- e
+    }
+  }
+
+  fmt_n <- function(n) format(as.integer(n %||% 0L), big.mark = ",")
+
   display_names <- vapply(fasta_files, function(f) {
-    bn <- basename(f)
+    bn      <- basename(f)
     size_mb <- round(file.size(f) / 1e6, 1)
-    sprintf("%s (%s MB)", bn, size_mb)
+    entry   <- registry_by_path[[normalizePath(f, mustWork = FALSE)]] %||%
+               registry_by_path[[f]]
+    if (!is.null(entry)) {
+      comp <- entry$composition %||% list()
+      parts <- c()
+      if (!is.null(comp$UNIPROT))       parts <- c(parts, sprintf("%s UniProt",  fmt_n(comp$UNIPROT)))
+      if (!is.null(comp$REF))           parts <- c(parts, sprintf("%s ref",      fmt_n(comp$REF)))
+      if (!is.null(comp$NOVEL_GENE))    parts <- c(parts, sprintf("%s novel gene",     fmt_n(comp$NOVEL_GENE)))
+      if (!is.null(comp$NOVEL_ISOFORM)) parts <- c(parts, sprintf("%s novel isoform",  fmt_n(comp$NOVEL_ISOFORM)))
+      sprintf("\U0001F9EC %s (%s MB; %s)",
+              entry$project_name %||% bn,
+              size_mb,
+              paste(parts, collapse = " + "))
+    } else {
+      sprintf("◇ %s (%s MB)", bn, size_mb)
+    }
   }, character(1))
 
   stats::setNames(fasta_files, display_names)
