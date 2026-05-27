@@ -5,7 +5,17 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.11.0] — 2026-05-26
+## [3.11.0] — 2026-05-26 / 27
+
+Reference registry expanded (2026-05-27):
+- **Pig** (`susScr_Sscrofa11.1`) — Ensembl 110
+- **Rat** (`rn7_mRatBN7.2`) — Ensembl 110
+- **Arabidopsis** (`arabidopsis_TAIR10`) — Ensembl Plants 58
+- Bovine + maize building; will be added when complete
+
+Reference Genome dropdown on the Build Database page now offers 5 species (human, mouse + the 3 above). New reference build script (`references/scripts/build_reference_genome.sh`) downloads genome + GTF + ncRNA from Ensembl, extracts rRNA by biotype, builds bowtie2 rRNA index + STAR genome index, writes a per-species pending JSON entry. A second script (`references/scripts/merge_registry_pending.sh`) safely merges pending entries into `registry.json` with jq + backups, moves applied entries into `registry_pending/applied/` for a paper trail. Idempotent and re-runnable.
+
+
 
 Proteogenomics workflow is now feature-complete and integrated end-to-end into the main DE-LIMP FASTA picker.
 
