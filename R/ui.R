@@ -2288,9 +2288,20 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
             condition = "!output.denovo_has_data",
             div(style = "background: #f0f7ff; border: 1px solid #b8d4f0; border-radius: 8px; padding: 16px; margin-bottom: 12px; text-align: center;",
               tags$p(style = "margin: 0 0 8px 0; color: #1565c0;",
-                icon("folder-open"), " Load existing DDA/de novo results from HPC"),
-              actionButton("load_dda_results_top", "Load Results",
-                icon = icon("download"), class = "btn-primary")
+                icon("folder-open"),
+                if (is_hf_space)
+                  " Load DDA / de novo results by uploading a shared ZIP"
+                else
+                  " Load existing DDA / de novo results — from HPC via SSH, or by uploading a ZIP (HF-friendly)"),
+              div(style = "display: inline-flex; gap: 6px; align-items: center;",
+                actionButton("load_dda_results_top",
+                  if (is_hf_space) "Upload Results ZIP" else "Load Results",
+                  icon = icon("download"), class = "btn-primary"),
+                actionButton("load_dda_results_info_btn",
+                  label = NULL, icon = icon("question-circle"),
+                  class = "btn-outline-info btn-sm",
+                  title = "What format does the ZIP need to be in?")
+              )
             )
           ),
 

@@ -540,10 +540,41 @@ server_dda <- function(input, output, session, values, add_to_log) {
 
   # Load Results modal — triggered from DDA search panel OR De Novo tab top button
   load_results_modal <- function() {
+    is_hf <- nzchar(Sys.getenv("SPACE_ID", ""))
+    # On HF: ZIP-only (no SSH possible). Elsewhere: both options.
+    hpc_panel <- if (!is_hf) {
+      tabPanel("From HPC (SSH)",
+        tags$br(),
+        tags$p(style = "color: #6c757d; font-size: 0.9em;",
+          "Requires an SSH connection to Hive. Downloads results from the given output directory."),
+        textInput("dda_load_path", "Output directory on HPC",
+          placeholder = "/quobyte/proteomics-grp/de-limp/brettsp/dda_output/dda_search",
+          width = "100%")
+      )
+    } else NULL
     showModal(modalDialog(
-      title = "Load DDA Results from HPC",
-      textInput("dda_load_path", "Output directory on HPC",
-        placeholder = "/quobyte/proteomics-grp/de-limp/brettsp/dda_output/dda_search"),
+      title = if (is_hf) "Load DDA / De Novo Results (Upload ZIP)" else "Load DDA / De Novo Results",
+      size = "l",
+      tabsetPanel(
+        hpc_panel,
+        tabPanel("Upload ZIP",
+          tags$br(),
+          tags$p(style = "color: #6c757d; font-size: 0.9em;",
+            "Upload a ZIP containing your DDA / de novo results. Useful on Hugging Face ",
+            "or when you've already pulled the files locally. Any subset of the files below works:"),
+          tags$pre(style = "font-size: 0.82em; background: #f8f9fa; padding: 10px; border-radius: 4px;",
+"results.zip
+├── results.sage.tsv          (Sage PSMs — required for DB-search results)
+├── lfq.tsv                    (optional: Sage label-free quant matrix)
+├── report.parquet             (alternative to Sage — DIA-NN DDA)
+└── casanovo/
+    └── mztab/
+        └── *.mztab            (Casanovo de novo results)"
+          ),
+          fileInput("dda_load_zip", NULL,
+            accept = c(".zip", "application/zip"), width = "100%")
+        )
+      ),
       footer = tagList(
         modalButton("Cancel"),
         actionButton("dda_load_confirm", "Load", class = "btn-primary", icon = icon("download"))
@@ -555,6 +586,73 @@ server_dda <- function(input, output, session, values, add_to_log) {
   observeEvent(input$load_dda_results_top, load_results_modal())
   observeEvent(input$load_dda_results_top2, load_results_modal())
 
+  # ── Info modal: explains both SSH-load and ZIP-upload formats ────────────
+  # Aimed at users who got a results ZIP from a colleague and need to load it
+  # into DE-LIMP on Hugging Face (no HPC access). Also useful for HPC users.
+  observeEvent(input$load_dda_results_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("question-circle"), " Loading DDA / De Novo Results"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(style = "font-size: 0.93em; line-height: 1.6;",
+
+        tags$h6("What this loads"),
+        tags$p("This panel ingests results from a DDA proteomics + de novo sequencing run that ",
+               "happened ", tags$em("elsewhere"), " (e.g. on the UC Davis Hive HPC, where Sage / DIA-NN / ",
+               "Casanovo ran as SLURM jobs). It does not run any search itself — it loads the outputs."),
+
+        tags$h6("Two ways to load"),
+        tags$ol(
+          tags$li(tags$strong("From HPC (SSH): "),
+                  "Paste the absolute path of the run's output directory on Hive ",
+                  "(e.g. ", tags$code("/quobyte/proteomics-grp/de-limp/brettsp/dda_output/dda_search"),
+                  "). DE-LIMP scp's the result files down. Requires the SSH connection in the sidebar."),
+          tags$li(tags$strong("Upload ZIP: "),
+                  "Drag-and-drop a ZIP file containing the results. ", tags$strong("This is how Hugging Face users load shared results"),
+                  " — DE-LIMP unpacks the ZIP locally and parses the contents. No HPC connection needed.")
+        ),
+
+        tags$h6("ZIP layout"),
+        tags$p("Include any subset of these files. The flat layout below is what HPC users see after a run ",
+               "— if you have nested folders, DE-LIMP will find files by basename anywhere in the ZIP."),
+        tags$pre(style = "font-size: 0.85em; background: #f8f9fa; padding: 12px; border-radius: 6px; border: 1px solid #e0e0e0;",
+"results.zip
+├── results.sage.tsv          ← Sage PSMs (DB-search). Required if you want to see Confirmed peptides.
+├── lfq.tsv                    ← Optional: Sage label-free quant matrix → enables Quantification panel.
+├── report.parquet             ← Alternative DB-search engine: DIA-NN DDA. Use instead of results.sage.tsv.
+└── casanovo/
+    └── mztab/
+        └── *.mztab            ← Optional: Casanovo de novo PSMs → enables Novel Peptides panel + BLAST."
+        ),
+
+        tags$h6("What each file unlocks"),
+        tags$ul(
+          tags$li(tags$strong("Sage TSV (or DIA-NN parquet): "),
+                  "Confirmed peptides table, Score Distribution, FDR analysis"),
+          tags$li(tags$strong("lfq.tsv: "), "Per-sample quantification panel"),
+          tags$li(tags$strong("Casanovo mztab: "),
+                  "Novel peptides (no DB match) → classification → de novo confidence plot"),
+          tags$li(tags$strong("blast_results.tsv at "), tags$code("denovo/blast_results.tsv"), ": ",
+                  "Pre-computed DIAMOND BLAST hits — skips re-running BLAST on upload")
+        ),
+
+        div(class = "alert alert-info py-2 px-3 mt-2",
+            style = "font-size: 0.88em;",
+            icon("info-circle"),
+            tags$strong(" For collaborators on HF: "),
+            "you only need the ZIP. Brett (or whoever shared the link) will pre-package one ",
+            "for you — drag it into the Upload ZIP tab and click Load. ",
+            "Everything works without an HPC account."),
+
+        div(class = "alert alert-warning py-2 px-3 mt-2",
+            style = "font-size: 0.88em;",
+            icon("exclamation-triangle"),
+            tags$strong(" Note (ZIP mode): "),
+            "DE-LIMP cannot ", tags$em("submit"), " new BLAST jobs when loading from a ZIP — ",
+            "include ", tags$code("denovo/blast_results.tsv"), " in the ZIP if you want BLAST results.")
+      )
+    ))
+  })
+
   # Flag for conditional panel — hide Load button when data exists
   output$denovo_has_data <- reactive({
     !is.null(values$denovo_classification) || !is.null(values$dda_casanovo_classification)
@@ -562,15 +660,78 @@ server_dda <- function(input, output, session, values, add_to_log) {
   outputOptions(output, "denovo_has_data", suspendWhenHidden = FALSE)
 
   observeEvent(input$dda_load_confirm, {
-    req(nzchar(input$dda_load_path))
-    ssh_cfg <- dda_ssh_config()
-    remote_dir <- trimws(input$dda_load_path)
+    # Either a ZIP upload (HF/local mode) or an HPC path must be provided
+    zip_uploaded <- !is.null(input$dda_load_zip) &&
+                     is.data.frame(input$dda_load_zip) &&
+                     nrow(input$dda_load_zip) > 0 &&
+                     file.exists(input$dda_load_zip$datapath[1])
+
+    if (!zip_uploaded && !nzchar(input$dda_load_path %||% "")) {
+      showNotification(
+        "Provide a ZIP file or an HPC output directory.",
+        type = "warning", duration = 6)
+      return()
+    }
+
+    # Set up local working dir + populate it (from ZIP or SSH)
+    local_tmp <- file.path(tempdir(), sprintf("dda_load_%s",
+                                              format(Sys.time(), "%Y%m%d_%H%M%S")))
+    if (dir.exists(local_tmp)) unlink(local_tmp, recursive = TRUE)
+    dir.create(local_tmp, showWarnings = FALSE, recursive = TRUE)
+
+    ssh_cfg <- NULL
+    remote_dir <- ""
+
+    if (zip_uploaded) {
+      # ── ZIP-upload path: unpack into local_tmp, then flatten layout so the
+      # downstream code (which expects results.sage.tsv at local_tmp/results.sage.tsv,
+      # .mztab at local_tmp/mztab/, etc.) finds files at canonical paths regardless
+      # of how the user structured their ZIP.
+      withProgress(message = "Unpacking ZIP...", value = 0.05, {
+        tryCatch({
+          utils::unzip(input$dda_load_zip$datapath[1], exdir = local_tmp)
+        }, error = function(e) {
+          showNotification(sprintf("ZIP unpack failed: %s",
+                                    conditionMessage(e)),
+                           type = "error", duration = 10)
+          stop(e)
+        })
+      })
+      # Walk the unzipped tree and copy files of interest into local_tmp/
+      # at the same flat layout the SSH path produces. We support any
+      # directory structure inside the ZIP (with or without a wrapper dir).
+      all_files <- list.files(local_tmp, recursive = TRUE, full.names = TRUE)
+      copy_first <- function(pattern, dest) {
+        hits <- all_files[grepl(pattern, basename(all_files), ignore.case = TRUE)]
+        if (length(hits) > 0 && !file.exists(dest)) {
+          file.copy(hits[1], dest, overwrite = FALSE)
+        }
+      }
+      copy_first("^results\\.sage\\.tsv$",   file.path(local_tmp, "results.sage.tsv"))
+      copy_first("^lfq\\.tsv$",              file.path(local_tmp, "lfq.tsv"))
+      copy_first("^report\\.parquet$",       file.path(local_tmp, "report.parquet"))
+      copy_first("^blast_results\\.tsv$",    file.path(local_tmp, "blast_results.tsv"))
+      # mztab files: copy all into a single mztab/ subdir
+      mztab_hits <- all_files[grepl("\\.mztab$", basename(all_files), ignore.case = TRUE)]
+      if (length(mztab_hits) > 0) {
+        mztab_dir <- file.path(local_tmp, "mztab")
+        dir.create(mztab_dir, showWarnings = FALSE)
+        for (mt in mztab_hits) {
+          dest <- file.path(mztab_dir, basename(mt))
+          if (!file.exists(dest)) file.copy(mt, dest)
+        }
+      }
+      remote_dir <- local_tmp  # for display; populates values$dda_output_dir
+      message(sprintf("[DDA Load] Unpacked ZIP to %s (%d files, %d mztabs)",
+                       local_tmp, length(all_files), length(mztab_hits)))
+    } else {
+      # ── HPC-SSH path: original behavior ──────────────────────────────────
+      ssh_cfg <- dda_ssh_config()
+      remote_dir <- trimws(input$dda_load_path)
+    }
 
     withProgress(message = "Loading DDA results...", value = 0.1, {
       tryCatch({
-        # Download results.sage.tsv
-        local_tmp <- file.path(tempdir(), "dda_load")
-        dir.create(local_tmp, showWarnings = FALSE, recursive = TRUE)
 
         # Try to load database search results: Sage first, then DIA-NN
         # Track which engine was used for source badge
@@ -641,22 +802,34 @@ server_dda <- function(input, output, session, values, add_to_log) {
         # Check for Casanovo mztab files in multiple locations:
         # 1. {output_dir}/casanovo/mztab/*.mztab (DE-LIMP generated)
         # 2. {raw_data_dir}/*.mztab (pre-existing, e.g. Glendon's feather data)
+        # ZIP-mode short-circuit: the unzip step already copied .mztab into local_tmp/mztab/.
         mztab_remote <- character(0)
-        for (mztab_search_dir in c(
-          file.path(remote_dir, "casanovo", "mztab"),
-          file.path(remote_dir, "casanovo"),
-          file.path(remote_dir, "denovo")
-        )) {
-          check <- ssh_exec(ssh_cfg,
-            paste0("ls ", shQuote(mztab_search_dir), "/*.mztab 2>/dev/null"),
-            timeout = 10)
-          if (check$status == 0 && length(check$stdout) > 0) {
-            found <- trimws(check$stdout)
-            found <- found[nzchar(found)]
-            if (length(found) > 0) {
-              mztab_remote <- found
-              message("[DDA Load] Found ", length(found), " mztab files in ", mztab_search_dir)
-              break
+        if (is.null(ssh_cfg)) {
+          local_mztab_dir <- file.path(local_tmp, "mztab")
+          if (dir.exists(local_mztab_dir)) {
+            mztab_remote <- list.files(local_mztab_dir, pattern = "\\.mztab$",
+                                        full.names = TRUE)
+            if (length(mztab_remote) > 0)
+              message("[DDA Load] Found ", length(mztab_remote),
+                      " mztab files in ZIP")
+          }
+        } else {
+          for (mztab_search_dir in c(
+            file.path(remote_dir, "casanovo", "mztab"),
+            file.path(remote_dir, "casanovo"),
+            file.path(remote_dir, "denovo")
+          )) {
+            check <- ssh_exec(ssh_cfg,
+              paste0("ls ", shQuote(mztab_search_dir), "/*.mztab 2>/dev/null"),
+              timeout = 10)
+            if (check$status == 0 && length(check$stdout) > 0) {
+              found <- trimws(check$stdout)
+              found <- found[nzchar(found)]
+              if (length(found) > 0) {
+                mztab_remote <- found
+                message("[DDA Load] Found ", length(found), " mztab files in ", mztab_search_dir)
+                break
+              }
             }
           }
         }
@@ -692,11 +865,16 @@ server_dda <- function(input, output, session, values, add_to_log) {
         if (length(mztab_remote) > 0) {
           mztab_local_dir <- file.path(local_tmp, "mztab")
           dir.create(mztab_local_dir, showWarnings = FALSE)
-          for (mt in mztab_remote) {
-            tryCatch(scp_download(ssh_cfg, mt, file.path(mztab_local_dir, basename(mt))),
-              error = function(e) NULL)
+          if (is.null(ssh_cfg)) {
+            # ZIP mode: mztab_remote already contains LOCAL paths from list.files
+            mztab_local <- mztab_remote
+          } else {
+            for (mt in mztab_remote) {
+              tryCatch(scp_download(ssh_cfg, mt, file.path(mztab_local_dir, basename(mt))),
+                error = function(e) NULL)
+            }
+            mztab_local <- list.files(mztab_local_dir, pattern = "\\.mztab$", full.names = TRUE)
           }
-          mztab_local <- list.files(mztab_local_dir, pattern = "\\.mztab$", full.names = TRUE)
           if (length(mztab_local) > 0) {
             casanovo_psms <- parse_casanovo_mztab(mztab_local, score_threshold = 0.9)
             if (nrow(casanovo_psms) > 0) {
@@ -721,12 +899,20 @@ server_dda <- function(input, output, session, values, add_to_log) {
         blast_local <- file.path(local_tmp, "blast_results.tsv")
         blast_loaded <- FALSE
         tryCatch({
-          # Check file exists on remote first
-          check <- ssh_exec(ssh_cfg,
-            paste("test -s", shQuote(blast_remote), "&& echo YES || echo NO"),
-            timeout = 10)
-          if (grepl("YES", paste(check$stdout, collapse = ""))) {
-            scp_download(ssh_cfg, blast_remote, blast_local)
+          if (is.null(ssh_cfg)) {
+            # ZIP mode: blast_results.tsv was already copied into local_tmp/
+            # by the normalize step (if present in the ZIP). Skip SSH probe.
+            blast_present <- file.exists(blast_local) && file.info(blast_local)$size > 100
+          } else {
+            check <- ssh_exec(ssh_cfg,
+              paste("test -s", shQuote(blast_remote), "&& echo YES || echo NO"),
+              timeout = 10)
+            blast_present <- grepl("YES", paste(check$stdout, collapse = ""))
+            if (blast_present) {
+              scp_download(ssh_cfg, blast_remote, blast_local)
+            }
+          }
+          if (blast_present) {
             if (file.exists(blast_local) && file.info(blast_local)$size > 100) {
               blast_df <- data.table::fread(blast_local, header = FALSE)
               if (nrow(blast_df) > 0) {
@@ -756,7 +942,9 @@ server_dda <- function(input, output, session, values, add_to_log) {
         })
 
         # Only submit new BLAST if no results loaded AND we have novel peptides
+        # AND we have an SSH connection (ZIP-only mode can't submit jobs).
         if (!blast_loaded &&
+            !is.null(ssh_cfg) &&
             !is.null(values$dda_casanovo_classification) &&
             nrow(values$dda_casanovo_classification$novel) > 0) {
           tryCatch({

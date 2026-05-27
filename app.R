@@ -712,6 +712,8 @@ server <- function(input, output, session) {
   })
 
   # --- Progressive reveal: hide result-dependent tabs until state exists ---
+  # De Novo is intentionally NOT hidden here — users need to reach the Load
+  # Results / Upload ZIP flow before they have any data (HF / no-SSH case).
   session$onFlushed(once = TRUE, function() {
     nav_hide("main_tabs", "QC")
     nav_hide("main_tabs", "DE Dashboard")
@@ -719,7 +721,11 @@ server <- function(input, output, session) {
     nav_hide("main_tabs", "AI Analysis")
     nav_hide("main_tabs", "Output")
     nav_hide("main_tabs", "Phosphoproteomics")
-    nav_hide("main_tabs", "De Novo")
+    # On HF the Submit Job sub-tab is useless (no HPC / SSH access).
+    # Keep the Results sub-tab so users can upload a shared ZIP.
+    if (is_hf_space) {
+      shinyjs::runjs("$('a[data-value=\"denovo_submit_tab\"]').closest('li').hide();")
+    }
   })
 
   observe({
@@ -765,13 +771,11 @@ server <- function(input, output, session) {
     }
   })
 
+  # De Novo tab is always visible — users need to reach the Load Results
+  # button to upload a ZIP (HF / no-SSH case). Empty state is handled by
+  # the conditionalPanel on `!output.denovo_has_data` inside the tab.
   observe({
-    if (!is.null(values$denovo_classification) || !is.null(values$denovo_data) ||
-        isTRUE(values$ssh_connected) || !is.null(values$dda_casanovo_classification)) {
-      nav_show("main_tabs", "De Novo")
-    } else {
-      nav_hide("main_tabs", "De Novo")
-    }
+    nav_show("main_tabs", "De Novo")
   })
 }
 
