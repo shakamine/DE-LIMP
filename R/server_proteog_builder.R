@@ -2164,6 +2164,12 @@ server_proteog_builder <- function(input, output, session, values) {
           pdir_attr, pname_attr))
       }
 
+      # Last-polled shown as HH:MM:SS only (date is usually today; saves width)
+      last_polled <- .empty_or_str(st$last_polled_at)
+      last_polled_txt <- if (nzchar(last_polled)) {
+        if (nchar(last_polled) >= 19) substr(last_polled, 12, 19) else last_polled
+      } else "—"
+
       tags$tr(
         tags$td(st$project_name %||% "?"),
         tags$td(tags$span(style = sprintf("background:%s; color:white; padding:2px 8px; border-radius:4px;",
@@ -2171,6 +2177,7 @@ server_proteog_builder <- function(input, output, session, values) {
                           current)),
         tags$td(progress_txt),
         tags$td(st$submitted_at %||% "?"),
+        tags$td(tags$small(style = "color:#666;", last_polled_txt)),
         tags$td(code(basename(st$project_dir %||% ""))),
         tags$td(assemble_btn)
       )
@@ -2179,6 +2186,7 @@ server_proteog_builder <- function(input, output, session, values) {
                tags$thead(tags$tr(
                  tags$th("Project"), tags$th("Stage"),
                  tags$th("Progress"), tags$th("Submitted"),
+                 tags$th("Last polled"),
                  tags$th("Dir"), tags$th("Action")
                )),
                tags$tbody(rows))

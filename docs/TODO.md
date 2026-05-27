@@ -1,5 +1,24 @@
 # DE-LIMP TODO
 
+## Proteogenomics (v3.11.0 shipped — these are follow-ups)
+- [x] **Auto-`assemble` SLURM stage** chained to every new build (v3.11.0)
+- [x] **`submit_assemble_only()` + per-row Assemble button** for legacy builds (v3.11.0)
+- [x] **UniProt + NCBI download integration** with auto-submit-after-download (v3.11.0)
+- [x] **FASTA library auto-registration** on assemble completion (v3.11.0)
+- [x] **"Restore from Hive" + "Discover from Hive"** for multi-user catalog (v3.11.0)
+- [x] **Active-builds persistence** at `~/.delimp_proteog_builds.rds` (v3.11.0)
+- [x] **Explain this workflow modal** in the green header (v3.11.0)
+- [x] **Source-tag column + Last-polled column** in Proteog DBs / Active Builds (v3.11.0)
+- [x] **Reference genome builder script** + 5 additional species (pig + rat done; bovine, arabidopsis, maize rerunning 2026-05-27) — merge `registry_pending → registry.json` via `references/scripts/merge_registry_pending.sh` when done.
+- [ ] **NCBI gene_map.tsv at result-load time**. Currently uploaded alongside the FASTA but not yet wired into DE-LIMP's `Genes` column population in `server_data.R`. Without it, NCBI-derived proteins in a proteog DB show as accessions instead of gene symbols in DE results. Touches the FASTA-resolution path that loads results from a search.
+- [ ] **search_settings on proteog catalog entries**. Currently NULL — picking a proteog DB doesn't pre-configure DIA-NN enzymes/mods like Database Library entries do. Less important since proteog FASTAs work with default DIA-NN settings.
+- [ ] **End-to-end test** of the auto-assemble pipeline. All 4 legacy builds were submitted pre-v3.11.0. Need to submit one fresh build (small SRA test like the smoketest) and watch it go through all 11 stages → catalog entry → main-page picker without manual intervention.
+- [ ] **Bioshare URL support** in Step 1 — SLIMS retired May 30, 2025. **Deferred** because Bioshare requires username/password authentication; not easily automatable.
+- [ ] **PacBio Iso-Seq pipeline mode**. Brett asked about it (2026-05-26). Same 11-stage scaffold but stages 1–5 differ: `pbskera` + `isoseq cluster` + `minimap2 -ax splice:hq` + `pbisoseq collapse` instead of fastp → STAR → stringtie. Stages 6–11 (gffcompare, gffread, TransDecoder, rewrite, assemble) stay the same. ~1–2 days dev.
+- [ ] **Xenium × bulk LC-MS integration** — see `docs/DESIGN_BRIEF_XENIUM_BULK_INTEGRATION.md`. Pattern 1 (mRNA-protein concordance) is the cheapest demo to build.
+- [ ] **scRNA-seq cell-type deconvolution** of bulk proteomics — BayesPrism integration as a new analysis tab. See Xenium brief for context.
+- [ ] **Variant calling → patient-specific neoantigen mode** — long-term proteogenomics extension. STAR's WASP-like + GATK + custom OPF format.
+
 ## Phosphoproteomics — Phase 2 (Kinase Activity & Motifs)
 - [ ] **KSEA integration** (`KSEAapp` CRAN package): Infer upstream kinase activity from phosphosite fold-changes using PhosphoSitePlus + NetworKIN database. Horizontal bar plot of kinase z-scores.
 - [ ] **Sequence logo / Motif analysis** (`ggseqlogo` CRAN package): Extract ±7 flanking residues around significant phosphosites, display as sequence logos. Requires FASTA upload.

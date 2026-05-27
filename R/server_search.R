@@ -3818,6 +3818,7 @@ server_search <- function(input, output, session, values, add_to_log,
     if (length(cat) == 0) {
       return(DT::datatable(
         data.frame(Project = character(), Organism = character(),
+                   Source = character(),
                    Samples = character(), Reference = character(),
                    Sequences = character(), Built = character(),
                    check.names = FALSE),
@@ -3827,10 +3828,22 @@ server_search <- function(input, output, session, values, add_to_log,
         )),
         rownames = FALSE, class = "compact stripe"))
     }
+    # Classify the source of each entry's UniProt addition (if any) so the
+    # user can see at a glance whether the FASTA includes UniProt entries,
+    # NCBI entries, or just the predicted ORFs.
+    classify_source <- function(e) {
+      up <- e$proteog_uniprot_fasta
+      if (is.null(up) || is.na(up) || !nzchar(as.character(up))) return("Predicted only")
+      path <- tolower(as.character(up))
+      if (grepl("ncbi|refseq|/genomes/", path)) return("Predicted + NCBI")
+      if (grepl("uniprot|up0[0-9]+", path))     return("Predicted + UniProt")
+      "Predicted + custom"
+    }
     df <- data.frame(
       Project   = vapply(cat, function(e) e$proteog_project_name %||%
                                           e$name %||% "?", character(1)),
       Organism  = vapply(cat, function(e) e$organism %||% "?", character(1)),
+      Source    = vapply(cat, classify_source, character(1)),
       Samples   = vapply(cat, function(e) {
         sn <- e$proteog_sample_names
         if (is.list(sn)) length(sn) else if (is.character(sn)) length(sn) else 0L
