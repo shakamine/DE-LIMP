@@ -77,11 +77,20 @@ generate_sage_config <- function(
     mzml_paths    = raw_paths
   )
 
-  # Add LFQ config for non-TMT
-
+  # Add LFQ config for non-TMT.
+  #
+  # IMPORTANT — Sage v0.14.7 config schema (the version we ship at
+  # /quobyte/proteomics-grp/de-limp/cascadia/sage-v0.14.7-x86_64-unknown-linux-gnu/sage):
+  #   quant.lfq             = BOOLEAN (true/false)              ← v0.14.7
+  #   quant.lfq_settings    = { peak_scoring, integration, spectral_angle, ppm_tolerance }
+  # In Sage v0.15+ the boolean was REMOVED and the settings object was
+  # renamed `lfq` (no `_settings` suffix). Emitting the v0.15 shape against
+  # v0.14.7 yields: `Error: invalid type: map, expected a boolean at line N`.
+  # Verified against https://github.com/lazear/sage/blob/v0.14.7/DOCS.md
   if (preset != "tmt") {
     config$quant <- list(
-      lfq = list(
+      lfq = jsonlite::unbox(TRUE),
+      lfq_settings = list(
         peak_scoring   = jsonlite::unbox("Hybrid"),
         integration    = jsonlite::unbox("Sum"),
         spectral_angle = jsonlite::unbox(0.7)

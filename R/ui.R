@@ -540,6 +540,8 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
       # Sub-panel: Run Search (existing DIA-NN workflow)
       # ------------------------------------------------------------------------
       nav_panel("Run Search", value = "search_tab", icon = icon("magnifying-glass"),
+      conditionalPanel(
+        condition = "input.acquisition_mode === 'dia'",
       # Three-panel wizard layout
       layout_column_wrap(
         width = 1/3,
@@ -1150,6 +1152,333 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
           )
         )
       )
+      ),  # close conditionalPanel DIA
+
+      # --- DDA panel (shown when acquisition_mode === 'dda') ---
+      conditionalPanel(
+        condition = "input.acquisition_mode === 'dda'",
+        div(
+          style = "padding: 20px; max-width: 900px; margin: 0 auto;",
+
+          # Info banner
+          div(class = "alert alert-info", role = "alert",
+            icon("flask"), " ",
+            tags$strong("DDA Workflow"),
+            " powered by ",
+            tags$strong("Sage"), " (database search) + ",
+            tags$strong("Casanovo"), " (de novo, optional). ",
+            "Requires Hive HPC connection. Supports timsTOF .d and Thermo .raw files."
+          ),
+
+          # Load existing results (prominent, at top)
+          div(style = "background: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;",
+            div(style = "display: flex; align-items: center; gap: 12px; flex-wrap: wrap;",
+              div(
+                icon("folder-open", style = "color: #2e7d32; font-size: 1.3em;"),
+                tags$span(style = "color: #2e7d32; font-weight: 600;", " Already have results?")
+              ),
+              actionButton("load_dda_results_top2", "Load Results from HPC",
+                icon = icon("download"), class = "btn-success btn-sm"),
+              tags$small(style = "color: #666;",
+                "Load Sage + Casanovo + BLAST results from an existing search output directory")
+            )
+          ),
+
+          # SSH required warning
+          conditionalPanel(
+            condition = "!output.ssh_connected_flag",
+            div(class = "alert alert-warning", role = "alert",
+              icon("exclamation-triangle"),
+              " Connect to Hive via SSH (in the DIA Search tab) before submitting a DDA search."
+            )
+          ),
+
+          # --- Raw Files ---
+          div(
+            style = "background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin-bottom: 16px;",
+            tags$h6(icon("folder-open"), " Raw Files", style = "margin-bottom: 12px;"),
+            div(style = "display: flex; gap: 8px; align-items: flex-end;",
+              div(style = "flex: 1;",
+                textInput("dda_raw_dir", "Raw file directory (Hive path)",
+                  placeholder = "/quobyte/proteomics-grp/to-hive/mass-spec-archive/...",
+                  width = "100%")
+              ),
+              actionButton("dda_scan_files", "Scan",
+                icon = icon("search"), class = "btn-outline-primary btn-sm",
+                style = "margin-bottom: 15px;")
+            ),
+            uiOutput("dda_file_list_preview")
+          ),
+
+          # --- Database ---
+          div(
+            style = "background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin-bottom: 16px;",
+            tags$h6(icon("database"), " FASTA Database", style = "margin-bottom: 12px;"),
+
+            selectInput("dda_fasta_source", NULL,
+              choices = c("Download from UniProt" = "uniprot",
+                          "Download from NCBI"    = "ncbi",
+                          "Database Library"      = "library",
+                          "Browse / enter path"   = "browse"),
+              width = "100%"),
+
+            # --- UniProt source ---
+            conditionalPanel("input.dda_fasta_source == 'uniprot'",
+              actionButton("dda_open_uniprot_modal", "Search UniProt",
+                class = "btn-info btn-sm w-100", icon = icon("search")),
+              uiOutput("dda_fasta_selected_info")
+            ),
+
+            # --- NCBI source ---
+            conditionalPanel("input.dda_fasta_source == 'ncbi'",
+              actionButton("dda_open_ncbi_modal", "Search NCBI",
+                class = "btn-success btn-sm w-100", icon = icon("search")),
+              uiOutput("dda_ncbi_fasta_selected_info")
+            ),
+
+            # --- Database Library ---
+            conditionalPanel("input.dda_fasta_source == 'library'",
+              uiOutput("dda_fasta_library_ui")
+            ),
+
+            # --- Browse / path source ---
+            conditionalPanel("input.dda_fasta_source == 'browse'",
+              div(style = "display: flex; gap: 5px; align-items: flex-end;",
+                div(style = "flex: 1;",
+                  textInput("dda_fasta_path", "FASTA path (Hive)",
+                    placeholder = "/quobyte/proteomics-grp/.../proteome.fasta",
+                    width = "100%")
+                ),
+                conditionalPanel(
+                  "output.ssh_connected_flag",
+                  actionButton("dda_ssh_browse_fasta_btn", NULL, icon = icon("folder-open"),
+                    class = "btn-outline-primary btn-sm",
+                    style = "margin-bottom: 15px;", title = "Browse remote directories")
+                )
+              )
+            ),
+
+            # Contaminant library (shared with DIA)
+            div(style = "margin-top: 10px;",
+              selectInput("dda_contaminant_library", "Add Contaminant Library:",
+                choices = c(
+                  "None" = "none",
+                  "Universal (Recommended)" = "universal",
+                  "Cell Culture" = "cell_culture",
+                  "Mouse Tissue" = "mouse_tissue",
+                  "Rat Tissue" = "rat_tissue",
+                  "Neuron Culture" = "neuron_culture",
+                  "Stem Cell Culture" = "stem_cell_culture"
+                ),
+                selected = "universal", width = "100%"),
+              tags$small(class = "text-muted",
+                "Contaminant libraries from ",
+                tags$a(href = "https://github.com/HaoGroup-ProtContLib/Protein-Contaminant-Libraries-for-DDA-and-DIA-Proteomics",
+                       "HaoGroup-ProtContLib", target = "_blank"))
+            ),
+
+            tags$small(style = "color: #6c757d; display: block; margin-top: 8px;",
+              "Recommended: one-protein-per-gene (OPG) FASTA for cleaner protein inference.")
+          ),
+
+          # --- Search Parameters ---
+          div(
+            style = "background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin-bottom: 16px;",
+            tags$h6(icon("sliders"), " Search Parameters", style = "margin-bottom: 12px;"),
+            div(style = "display: flex; gap: 16px; flex-wrap: wrap;",
+              div(style = "min-width: 180px;",
+                textInput("dda_experiment_name", "Experiment name",
+                  value = "dda_search", width = "100%")
+              ),
+              div(style = "min-width: 150px;",
+                selectInput("dda_preset", "Preset",
+                  choices = c("Standard" = "standard",
+                              "Phosphoproteomics" = "phospho",
+                              "TMT Labeling" = "tmt"),
+                  selected = "standard", width = "100%")
+              )
+            ),
+            div(style = "display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;",
+              div(style = "min-width: 130px;",
+                numericInput("dda_missed_cleavages", "Missed cleavages",
+                  value = 2, min = 0, max = 4, step = 1, width = "100%")
+              ),
+              div(style = "min-width: 130px;",
+                numericInput("dda_precursor_tol", "Precursor tol. (ppm)",
+                  value = 20, min = 1, max = 100, step = 1, width = "100%")
+              ),
+              div(style = "min-width: 130px;",
+                numericInput("dda_fragment_tol", "Fragment tol. (Da)",
+                  value = 0.05, min = 0.01, max = 0.5, step = 0.01, width = "100%")
+              )
+            ),
+            # Advanced SLURM controls (collapsed)
+            tags$details(
+              style = "margin-top: 12px;",
+              tags$summary(style = "cursor: pointer; color: #6c757d; font-size: 13px;",
+                icon("gear"), " Advanced SLURM settings"),
+              div(style = "display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;",
+                div(style = "min-width: 100px;",
+                  numericInput("dda_cpus", "CPUs", value = 32, min = 4, max = 128, step = 4, width = "100%")
+                ),
+                div(style = "min-width: 100px;",
+                  numericInput("dda_mem", "Memory (GB)", value = 64, min = 8, max = 512, step = 8, width = "100%")
+                ),
+                div(style = "min-width: 120px;",
+                  textInput("dda_time_limit", "Time limit", value = "02:00:00", width = "100%")
+                )
+              )
+            )
+          ),
+
+          # --- Normalization & Imputation ---
+          div(
+            style = "background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin-bottom: 16px;",
+            tags$h6(icon("chart-line"), " Normalization & Imputation", style = "margin-bottom: 12px;"),
+            div(style = "display: flex; gap: 16px; flex-wrap: wrap;",
+              div(style = "min-width: 180px;",
+                selectInput("dda_norm_method", "Normalization",
+                  choices = c("Cyclic Loess" = "cyclicloess",
+                              "Median centering" = "median",
+                              "Quantile" = "quantile",
+                              "None" = "none"),
+                  selected = "cyclicloess", width = "100%")
+              ),
+              div(style = "min-width: 180px;",
+                selectInput("dda_impute_method", "Imputation",
+                  choices = c("Perseus (MNAR)" = "perseus",
+                              "MinProb (MNAR)" = "minprob",
+                              "MinDet (deterministic)" = "mindet",
+                              "None" = "none"),
+                  selected = "perseus", width = "100%")
+              ),
+              div(style = "min-width: 130px;",
+                sliderInput("dda_min_valid", "Min. valid fraction",
+                  min = 0.3, max = 1.0, value = 0.5, step = 0.1, width = "100%")
+              )
+            ),
+            # Perseus parameters (conditional)
+            conditionalPanel(
+              condition = "input.dda_impute_method === 'perseus' || input.dda_impute_method === 'minprob'",
+              div(style = "display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;",
+                div(style = "min-width: 130px;",
+                  numericInput("dda_perseus_width", "Width", value = 0.3, min = 0.1, max = 1.0, step = 0.1, width = "100%")
+                ),
+                div(style = "min-width: 130px;",
+                  numericInput("dda_perseus_shift", "Shift (SD)", value = 1.8, min = 0.5, max = 3.0, step = 0.1, width = "100%")
+                )
+              )
+            )
+          ),
+
+          # --- Casanovo de novo (optional GPU overlay) ---
+          div(
+            style = "background: linear-gradient(135deg, #f8f5ff 0%, #f0e8ff 100%); border: 1px solid #d4c5f0; border-radius: 8px; padding: 16px; margin-bottom: 16px;",
+            tags$h6(icon("wand-magic-sparkles"), " De Novo Sequencing (Casanovo)",
+              style = "margin-bottom: 12px; color: #6f42c1;"),
+            checkboxInput("dda_run_casanovo",
+              label = tags$span(
+                "Run Casanovo de novo sequencing",
+                tags$span(
+                  class = "badge bg-info",
+                  style = "font-size: 10px; margin-left: 8px;",
+                  "GPU"
+                )
+              ),
+              value = FALSE
+            ),
+            conditionalPanel(
+              condition = "input.dda_run_casanovo",
+              div(
+                style = "margin-top: 8px; padding: 8px; background: rgba(255,255,255,0.5); border-radius: 6px;",
+                tags$small(
+                  style = "color: #495057; display: block; margin-bottom: 8px;",
+                  icon("info-circle"),
+                  " Casanovo v4.3 GPU-accelerated de novo sequencing. ",
+                  "Runs in parallel with Sage on the gpu-a100 partition. ",
+                  "Identifies novel peptides and validates Sage database hits."
+                ),
+                div(
+                  style = "display: flex; gap: 12px; flex-wrap: wrap;",
+                  div(style = "min-width: 200px;",
+                    textInput("dda_casanovo_model", "Model checkpoint",
+                      value = "casanovo_v4_2_0",
+                      width = "100%",
+                      placeholder = "casanovo_v4_2_0"
+                    )
+                  ),
+                  div(style = "min-width: 120px;",
+                    numericInput("dda_casanovo_score_threshold",
+                      "Min. score", value = -0.5,
+                      min = -2, max = 1, step = 0.1, width = "100%"
+                    )
+                  )
+                )
+              )
+            ),
+            tags$small(style = "color: #7c6fa0; display: block; margin-top: 4px;",
+              "Optional. Sage search runs independently even if Casanovo fails.")
+          ),
+
+          # --- Submit ---
+          conditionalPanel(
+            condition = "output.ssh_connected_flag",
+            div(
+              style = "padding: 8px 0;",
+              div(class = "d-flex gap-2",
+                actionButton("run_dda_search", "Submit DDA Search",
+                  icon  = icon("rocket"),
+                  class = "btn-primary btn-lg flex-grow-1"
+                ),
+                actionButton("load_dda_results", "Load Results",
+                  icon  = icon("folder-open"),
+                  class = "btn-outline-secondary btn-lg"
+                )
+              ),
+              tags$small(
+                style = "color: #6c757d; display: block; margin-top: 4px; text-align: center;",
+                "Submits Sage (CPU)",
+                conditionalPanel(
+                  condition = "input.dda_run_casanovo",
+                  style = "display: inline;",
+                  " + Casanovo (GPU)"
+                )
+              )
+            )
+          ),
+
+          # --- Status + Results ---
+          uiOutput("dda_job_status_ui"),
+          uiOutput("dda_casanovo_status_ui"),
+
+          # --- Group Assignment + Pipeline (shown after results loaded) ---
+          uiOutput("dda_group_assignment_ui"),
+
+          uiOutput("dda_results_summary_ui"),
+
+          # --- QC Summary Card ---
+          uiOutput("dda_qc_summary_card")
+        )
+      ),
+
+      # --- XL-MS panel (placeholder — Coming Soon) ---
+      conditionalPanel(
+        condition = "input.acquisition_mode === 'xlms'",
+        div(style = "padding: 40px; max-width: 700px; margin: 30px auto;",
+          div(class = "alert alert-info py-3 px-4",
+            style = "font-size: 0.95em;",
+            icon("link"),
+            tags$strong(" XL-MS Search — Coming Soon"),
+            tags$p(style = "margin: 8px 0 0 0;",
+              "Cross-linking mass spectrometry (XL-MS) search is on the roadmap but not yet wired up. ",
+              "When ready it'll integrate xQuest / pLink / MeroX search engines for identifying ",
+              "covalent peptide-peptide cross-links (BS3, DSSO, DSBU and similar reagents)."),
+            tags$p(style = "margin: 6px 0 0 0; color: #555;",
+              "For now: switch back to ", tags$strong("DIA"), " or ", tags$strong("DDA"), " mode.")
+          )
+        )
+      ),
+
       ),  # close Run Search nav_panel
 
       # ------------------------------------------------------------------------
@@ -2600,26 +2929,10 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
           )
         )
       ),
-      nav_panel("Submit Job", value = "denovo_submit_tab", icon = icon("rocket"),
-        div(style = "max-width: 800px; margin: 40px auto; padding: 20px;",
-          tags$h4("Submit De Novo Sequencing Job"),
-          tags$p("Run de novo sequencing on raw files. Cascadia for DIA data, Casanovo for DDA data."),
-          div(class = "alert alert-info py-3 px-4 mt-3",
-            style = "font-size: 0.95em;",
-            icon("info-circle"), tags$strong(" Submit UI under construction."),
-            tags$p(style = "margin: 8px 0 0 0;",
-              "The interactive submit form (model picker, raw-file selector, GPU partition, ",
-              "DIAMOND BLAST options) is part of the de novo feature work currently being ",
-              "wired up from ", tags$code("feature/cascadia-denovo"), "."
-            ),
-            tags$p(style = "margin: 6px 0 0 0; color: #555;",
-              "For now, submit Cascadia / Casanovo jobs directly via ", tags$code("sbatch"),
-              " on Hive, then use ", tags$strong("De Novo → Results → Load Results"),
-              " to bring outputs back into DE-LIMP."
-            )
-          )
-        )
-      )
+      # NOTE: "Submit Job" sub-tab removed — submission lives in:
+      #   New Search → Run Search → DDA mode (Sage + Casanovo)
+      #   New Search → Run Search → DIA mode (+ Cascadia checkbox)
+      # No need for a separate De Novo submit form.
     ),
 
     # ==========================================================================

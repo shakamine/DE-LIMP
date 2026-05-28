@@ -12,6 +12,66 @@ server_dda <- function(input, output, session, values, add_to_log) {
   slurm_account   <- config$slurm$account   %||% "genome-center-grp"
   slurm_partition <- config$slurm$partition  %||% "high"
 
+  # ─── DDA + Casanovo job queue persistence ───────────────────────────────
+  # Mirrors values$dda_jobs (list of submitted runs) to disk so the queue
+  # survives Shiny restarts. Same per-user-local pattern as DIA-NN job_queue
+  # and proteog_builds. Active job state (values$dda_job_id / dda_status /
+  # dda_output_dir) continues to reflect the most-recently-active run.
+  dda_queue_path <- function() file.path(path.expand("~"), ".delimp_dda_queue.rds")
+  dda_queue_save <- function(jobs) {
+    tryCatch(saveRDS(jobs, dda_queue_path()),
+             error = function(e) message("[DDA] queue save failed: ",
+                                          conditionMessage(e)))
+  }
+  dda_queue_load <- function() {
+    p <- dda_queue_path()
+    if (!file.exists(p)) return(list())
+    tryCatch(readRDS(p), error = function(e) {
+      message("[DDA] queue load failed: ", conditionMessage(e)); list()
+    })
+  }
+  # Restore on module init — wrap in isolate() because reactiveValues access
+  # outside a reactive consumer throws.
+  isolate({
+    if (length(values$dda_jobs %||% list()) == 0) {
+      restored <- dda_queue_load()
+      if (length(restored) > 0) {
+        values$dda_jobs <- restored
+        message(sprintf("[DDA] restored %d job(s) from disk", length(restored)))
+      }
+    }
+  })
+  # Persist on every change — never clobber a non-empty file with an empty
+  # list (avoids the startup-race bug we hit on proteog).
+  observe({
+    jobs <- values$dda_jobs %||% list()
+    if (length(jobs) == 0 && file.exists(dda_queue_path())) {
+      existing <- tryCatch(readRDS(dda_queue_path()), error = function(e) NULL)
+      if (length(existing) > 0) return()
+    }
+    dda_queue_save(jobs)
+  })
+
+  # Sync `values$dda_status` transitions into the matching queue entry so the
+  # persisted queue reflects "running" → "done" / "error" without touching
+  # every set-status call site.
+  observe({
+    st <- values$dda_status
+    jid <- isolate(values$dda_job_id)
+    jobs <- isolate(values$dda_jobs %||% list())
+    if (is.null(st) || is.null(jid) || length(jobs) == 0) return()
+    idx <- which(vapply(jobs, function(j) identical(as.character(j$job_id),
+                                                     as.character(jid)),
+                        logical(1)))
+    if (length(idx) == 0) return()
+    if (!identical(jobs[[idx[1]]]$status, st)) {
+      jobs[[idx[1]]]$status <- st
+      if (st %in% c("done", "error", "loaded"))
+        jobs[[idx[1]]]$finished_at <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
+      values$dda_jobs <- jobs
+    }
+  })
+
   # Casanovo config defaults
   casanovo_conda_env   <- config$tools$casanovo_conda_env %||%
     "/quobyte/proteomics-grp/conda_envs/cassonovo_env"
@@ -659,6 +719,56 @@ server_dda <- function(input, output, session, values, add_to_log) {
   })
   outputOptions(output, "denovo_has_data", suspendWhenHidden = FALSE)
 
+  # Pre-flight check — verify the requested output dir actually has the
+  # expected files before kicking off scp_download + parse. Refuses to load
+  # search dirs where the underlying SLURM jobs failed (so users don't load
+  # zero/garbage results).
+  dda_preflight_check <- function(remote_dir, ssh_cfg) {
+    if (is.null(ssh_cfg) || !nzchar(remote_dir %||% "")) {
+      return(list(ok = TRUE, msg = ""))  # ZIP mode skips this
+    }
+    # Use one ssh_exec with stat checks for all files we care about
+    cmd <- sprintf(paste(
+      "echo SAGE=$(test -s %s/results.sage.tsv && stat -c%%s %s/results.sage.tsv || echo 0);",
+      "echo DIANN=$(test -s %s/report.parquet && stat -c%%s %s/report.parquet || echo 0);",
+      "echo MZTAB=$(ls %s/casanovo/mztab/*.mztab 2>/dev/null | wc -l);",
+      "echo BLAST=$(test -s %s/denovo/blast_results.tsv && echo 1 || echo 0)"),
+      shQuote(remote_dir), shQuote(remote_dir),
+      shQuote(remote_dir), shQuote(remote_dir),
+      shQuote(remote_dir), shQuote(remote_dir))
+    res <- tryCatch(ssh_exec(ssh_cfg, cmd, login_shell = FALSE, timeout = 15),
+                    error = function(e) NULL)
+    if (is.null(res) || !identical(res$status, 0L)) {
+      return(list(ok = FALSE, msg = "Could not reach the output directory on Hive."))
+    }
+    txt <- paste(res$stdout %||% character(), collapse = "\n")
+    sage_size  <- as.numeric(sub(".*SAGE=([0-9]+).*",  "\\1", txt))
+    diann_size <- as.numeric(sub(".*DIANN=([0-9]+).*", "\\1", txt))
+    n_mztab    <- as.numeric(sub(".*MZTAB=([0-9]+).*", "\\1", txt))
+    has_blast  <- grepl("BLAST=1", txt)
+    has_sage_or_diann <- (!is.na(sage_size) && sage_size > 100) ||
+                         (!is.na(diann_size) && diann_size > 100)
+    has_mztab <- !is.na(n_mztab) && n_mztab > 0
+    if (!has_sage_or_diann && !has_mztab) {
+      return(list(ok = FALSE, msg = paste0(
+        "No usable results found in ", remote_dir, ".\n",
+        "Expected: results.sage.tsv (Sage), report.parquet (DIA-NN), or casanovo/mztab/*.mztab.\n",
+        "All searches in this directory may have failed — check sacct for the job IDs."
+      )))
+    }
+    # Build a status summary so the user knows what's about to load
+    parts <- c()
+    if (!is.na(sage_size) && sage_size > 100)
+      parts <- c(parts, sprintf("Sage (%s)", format(sage_size, big.mark = ",")))
+    if (!is.na(diann_size) && diann_size > 100)
+      parts <- c(parts, sprintf("DIA-NN (%s)", format(diann_size, big.mark = ",")))
+    if (has_mztab)
+      parts <- c(parts, sprintf("Casanovo (%d .mztab)", n_mztab))
+    if (has_blast)
+      parts <- c(parts, "BLAST")
+    list(ok = TRUE, msg = paste(parts, collapse = " + "))
+  }
+
   observeEvent(input$dda_load_confirm, {
     # Either a ZIP upload (HF/local mode) or an HPC path must be provided
     zip_uploaded <- !is.null(input$dda_load_zip) &&
@@ -671,6 +781,22 @@ server_dda <- function(input, output, session, values, add_to_log) {
         "Provide a ZIP file or an HPC output directory.",
         type = "warning", duration = 6)
       return()
+    }
+
+    # Pre-flight: refuse to load search dirs whose jobs all failed.
+    if (!zip_uploaded) {
+      pre <- dda_preflight_check(trimws(input$dda_load_path),
+                                  dda_ssh_config())
+      if (!isTRUE(pre$ok)) {
+        showNotification(
+          tags$div(tags$strong("Pre-flight check failed."),
+                   tags$br(), tags$pre(style="margin-top:6px; font-size:0.85em;", pre$msg)),
+          type = "error", duration = 15)
+        return()
+      } else if (nzchar(pre$msg)) {
+        showNotification(sprintf("Loading: %s", pre$msg),
+                         type = "default", duration = 5)
+      }
     }
 
     # Set up local working dir + populate it (from ZIP or SSH)
@@ -1211,10 +1337,30 @@ echo "[DIAMOND] Done: $(date)"
       job_id <- trimws(sub(".*Submitted batch job\\s+", "", job_line[1]))
       message("[DDA] Sage job submitted: ", job_id)
 
-      # Store state
+      # Store state — both the "active job" scalars (used by polling + status
+      # UI + result loaders) AND a queue entry (persisted to disk via the
+      # observer at module init, so the queue survives Shiny restarts).
       values$dda_job_id     <- job_id
       values$dda_output_dir <- output_dir
       values$dda_status     <- "running"
+
+      dda_name <- if (nzchar(input$dda_analysis_name %||% ""))
+                    input$dda_analysis_name
+                  else
+                    sprintf("DDA_%s", format(Sys.time(), "%Y%m%d_%H%M%S"))
+      values$dda_jobs <- c(values$dda_jobs %||% list(), list(list(
+        job_id        = job_id,
+        name          = dda_name,
+        output_dir    = output_dir,
+        status        = "running",
+        submitted_at  = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+        n_files       = length(raw_paths),
+        engine        = "Sage",
+        casanovo      = isTRUE(input$dda_run_casanovo),
+        casanovo_model = if (isTRUE(input$dda_run_casanovo))
+                           input$dda_casanovo_model %||% NA_character_
+                         else NA_character_
+      )))
 
       run_casanovo <- isTRUE(input$dda_run_casanovo)
       values$dda_search_params <- list(
@@ -1976,7 +2122,7 @@ echo "[DIAMOND] Done: $(date)"
   output$dda_job_status_ui <- renderUI({
     status <- values$dda_status %||% "idle"
 
-    switch(status,
+    active_block <- switch(status,
       "idle" = NULL,
       "running" = {
         job_id <- values$dda_job_id %||% "?"
@@ -2027,6 +2173,196 @@ echo "[DIAMOND] Done: $(date)"
         )
       }
     )
+
+    # ── Persistent queue table — survives Shiny restarts via ~/.delimp_dda_queue.rds ──
+    jobs <- values$dda_jobs %||% list()
+    discover_btn <- actionButton("dda_discover_btn",
+      tagList(icon("magnifying-glass"), " Discover from Hive"),
+      class = "btn-outline-primary btn-sm",
+      title = "Scan Hive for past DDA / Sage searches and add them to the queue")
+
+    queue_block <- if (length(jobs) > 0) {
+      badge_color <- function(s) switch(s,
+        "running" = "#f39c12",
+        "loading" = "#3498db",
+        "done"    = "#27ae60",
+        "loaded"  = "#27ae60",
+        "error"   = "#c0392b",
+        "#6c757d")
+      rows <- lapply(rev(jobs), function(j) {
+        out_dir <- as.character(j$output_dir %||% "")
+        load_btn <- if (nzchar(out_dir)) {
+          dir_esc <- htmltools::htmlEscape(out_dir, attribute = TRUE)
+          HTML(sprintf(
+            '<button class="btn btn-outline-primary btn-sm" title="Load this run into DE-LIMP" onclick="Shiny.setInputValue(\'dda_load_from_queue\', {dir: \'%s\', _ts: Date.now()}, {priority:\'event\'})"><i class="fa fa-download"></i></button>',
+            dir_esc))
+        } else NULL
+        tags$tr(
+          tags$td(j$name %||% "?"),
+          tags$td(tags$span(
+            style = sprintf("background:%s; color:white; padding:2px 8px; border-radius:4px; font-size: 0.78em;",
+                            badge_color(j$status %||% "?")),
+            j$status %||% "?")),
+          tags$td(as.character(j$job_id %||% "?")),
+          tags$td(if (isTRUE(j$casanovo)) "✓" else "—"),
+          tags$td(j$n_files %||% "?"),
+          tags$td(tags$small(j$submitted_at %||% "?")),
+          tags$td(tags$small(style = "font-family: monospace;",
+                              basename(out_dir))),
+          tags$td(load_btn)
+        )
+      })
+      div(style = "margin-top: 16px;",
+        div(style = "display: flex; justify-content: space-between; align-items: center;",
+          tags$h6(icon("list-check"), " DDA + Casanovo job queue ",
+                  tags$small(style = "color: #6c757d; font-weight: normal;",
+                             sprintf("(%d %s)", length(jobs),
+                                     if (length(jobs) == 1) "entry" else "entries"))),
+          discover_btn
+        ),
+        tags$table(class = "table table-sm",
+          style = "font-size: 0.88em;",
+          tags$thead(tags$tr(
+            tags$th("Name"), tags$th("Status"), tags$th("Job ID"),
+            tags$th("Casanovo"), tags$th("# Files"),
+            tags$th("Submitted"), tags$th("Output dir"),
+            tags$th("Load"))),
+          tags$tbody(rows)),
+        tags$small(style = "color: #6c757d;",
+          "Queue persists across app restarts at ", tags$code("~/.delimp_dda_queue.rds"))
+      )
+    } else {
+      # Empty queue: still show the Discover button so users can pull in
+      # historical searches submitted before persistence existed.
+      div(style = "margin-top: 16px; padding: 12px; background: #f0f7ff; border: 1px solid #b8d4f0; border-radius: 6px;",
+        div(style = "display: flex; justify-content: space-between; align-items: center;",
+          tags$div(
+            tags$strong("No DDA jobs in queue yet."),
+            tags$br(),
+            tags$small(style = "color: #6c757d;",
+              "Submit a search above, or pull in previous runs from Hive.")
+          ),
+          discover_btn
+        )
+      )
+    }
+
+    tagList(active_block, queue_block)
+  })
+
+  # ── Discover-from-Hive handler ──────────────────────────────────────────
+  # Scans common DDA output roots on Hive for past Sage searches and adds
+  # them to the queue. Matches the proteog "Discover from Hive" pattern.
+  # Per-row "Load" button on queued/discovered jobs: open the Load Results
+  # modal pre-populated with this run's output_dir, so the user can review
+  # + click Confirm to run the existing scp_download + parse pipeline
+  # (Sage TSV + LFQ + Casanovo .mztab + BLAST + search_info.md ingestion).
+  observeEvent(input$dda_load_from_queue, {
+    payload <- input$dda_load_from_queue
+    if (is.null(payload) || is.null(payload$dir)) return()
+    load_results_modal()
+    # The modal builds its inputs on-render; update the path field once it's
+    # in the DOM. session$onFlushed fires after the next UI flush.
+    session$onFlushed(once = TRUE, function() {
+      updateTextInput(session, "dda_load_path",
+                      value = as.character(payload$dir))
+    })
+  })
+
+  observeEvent(input$dda_discover_btn, {
+    sc <- dda_ssh_config()
+    if (is.null(sc)) {
+      showNotification("Connect to Hive first to discover past searches.",
+                       type = "warning", duration = 8)
+      return()
+    }
+    # Look for results.sage.tsv under typical DDA roots. Use sort -u in case
+    # multiple search roots resolve to the same tree (e.g. /brettsp/ ==
+    # /$USER/), and de-dupe BOTH the input queue and the find output.
+    user_root <- sprintf("/quobyte/proteomics-grp/de-limp/%s", sc$user %||% "")
+    roots <- unique(c("/quobyte/proteomics-grp/de-limp/brettsp", user_root))
+    roots <- roots[nzchar(roots)]
+    cmd <- sprintf(
+      "find %s -maxdepth 5 -name results.sage.tsv -type f 2>/dev/null | sort -u",
+      paste(shQuote(roots), collapse = " ")
+    )
+    res <- tryCatch(
+      ssh_exec(sc, cmd, login_shell = FALSE, timeout = 30),
+      error = function(e) list(status = 1L, stdout = character(),
+                                stderr = conditionMessage(e)))
+    paths <- trimws(unlist(strsplit(paste(res$stdout %||% character(),
+                                          collapse = "\n"), "\n")))
+    paths <- unique(paths[!is.na(paths) & nzchar(paths)])
+
+    # De-dupe the existing queue by output_dir (fix old duplicates from
+    # an earlier double-scan).
+    queue_in <- values$dda_jobs %||% list()
+    if (length(queue_in) > 0) {
+      dirs_seen <- character(0)
+      deduped <- list()
+      for (j in queue_in) {
+        d <- as.character(j$output_dir %||% "")
+        if (!nzchar(d) || d %in% dirs_seen) next
+        dirs_seen <- c(dirs_seen, d)
+        deduped[[length(deduped) + 1L]] <- j
+      }
+      if (length(deduped) != length(queue_in)) {
+        message(sprintf("[DDA Discover] dedupe: %d → %d queue entries",
+                         length(queue_in), length(deduped)))
+      }
+      values$dda_jobs <- deduped
+    }
+    if (length(paths) == 0) {
+      showNotification("No past DDA searches found on Hive.",
+                       type = "default", duration = 6)
+      return()
+    }
+    current <- values$dda_jobs %||% list()
+    existing_dirs <- vapply(current, function(j)
+                            as.character(j$output_dir %||% ""),
+                            character(1))
+    added <- 0L
+    for (p in paths) {
+      output_dir <- dirname(p)
+      if (output_dir %in% existing_dirs) next
+      # Look for Casanovo evidence in the same dir
+      cas <- tryCatch(ssh_exec(sc,
+        sprintf("ls %s/casanovo/mztab/*.mztab 2>/dev/null | head -1",
+                shQuote(output_dir)),
+        login_shell = FALSE, timeout = 10),
+        error = function(e) list(status = 1L, stdout = character()))
+      has_casanovo <- !is.null(cas) && identical(cas$status, 0L) &&
+                       nzchar(trimws(paste(cas$stdout %||% character(),
+                                           collapse = "")))
+      # Try to parse job_id + submitted_at from search_info.md
+      job_id <- NA_character_; submitted_at <- NA_character_
+      info <- tryCatch(ssh_exec(sc,
+        sprintf("cat %s/search_info.md 2>/dev/null", shQuote(output_dir)),
+        login_shell = FALSE, timeout = 10),
+        error = function(e) NULL)
+      if (!is.null(info) && identical(info$status, 0L)) {
+        txt <- paste(info$stdout %||% character(), collapse = "\n")
+        jid_m <- regmatches(txt, regexpr("[Jj]ob[_ ]?ID[:\\s]+([0-9]+)", txt))
+        if (length(jid_m) > 0) job_id <- gsub("[^0-9]", "", jid_m)
+        ts_m <- regmatches(txt, regexpr("[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ][0-9]{2}:[0-9]{2}:[0-9]{2}", txt))
+        if (length(ts_m) > 0) submitted_at <- ts_m
+      }
+      current[[length(current) + 1L]] <- list(
+        job_id        = job_id,
+        name          = basename(output_dir),
+        output_dir    = output_dir,
+        status        = "discovered",
+        submitted_at  = submitted_at,
+        n_files       = NA_integer_,
+        engine        = "Sage",
+        casanovo      = has_casanovo
+      )
+      added <- added + 1L
+    }
+    values$dda_jobs <- current
+    showNotification(sprintf("Discovered %d past DDA search(es). %d already in queue.",
+                             added, length(paths) - added),
+                     type = "default", duration = 8)
   })
 
   # ============================================================================

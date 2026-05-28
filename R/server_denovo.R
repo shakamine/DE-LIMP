@@ -277,14 +277,14 @@ server_denovo <- function(input, output, session, values, add_to_log) {
       options  = list(
         pageLength = 25,
         scrollX    = TRUE,
-        order      = list(list(2, "desc")),  # Sort by Score descending
-        dom        = "Bfrtip",
-        buttons    = list("csv", "excel")
+        order      = list(list(2, "desc")),
+        deferRender = TRUE,
+        scroller    = FALSE,
+        processing  = TRUE
       ),
-      extensions = "Buttons",
-      caption = "Confirmed: de novo peptides matching DIA-NN database search results (I/L normalized)"
+      caption = "Confirmed: de novo peptides matching DIA-NN database search results (I/L normalized). Use the Download CSV button above for the full export."
     )
-  })
+  }, server = TRUE)
 
   # ============================================================================
   #  5. Novel Peptides Table
@@ -333,21 +333,20 @@ server_denovo <- function(input, output, session, values, add_to_log) {
         pageLength = 25,
         scrollX    = TRUE,
         order      = list(list(2, "desc")),
-        dom        = "Bfrtip",
-        buttons    = list("csv", "excel")
+        deferRender = TRUE,
+        processing  = TRUE
       ),
-      extensions = "Buttons",
       caption = htmltools::tags$caption(
         style = "caption-side: top; color: #e67e22; font-weight: bold;",
         "Novel: de novo peptides NOT found in DIA-NN results.",
         tags$br(),
         tags$small(
           style = "color: #666; font-weight: normal;",
-          "These may represent sequence variants, unexpected organisms, or proteins absent from your reference FASTA."
+          "These may represent sequence variants, unexpected organisms, or proteins absent from your reference FASTA. Use the Download CSV button above for the full export."
         )
       )
     )
-  })
+  }, server = TRUE)
 
   # ============================================================================
   #  6. Run DIAMOND BLAST Button
