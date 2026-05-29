@@ -857,12 +857,30 @@ server_dda <- function(input, output, session, values, add_to_log) {
     updateSelectizeInput(session, "dda_file_filter", selected = character(0))
   })
 
+  # TRUE for each PSM whose ENTIRE protein group is contaminant — i.e. every
+  # accession carries the `Cont_` tag stamped by the contaminant FASTA we
+  # appended at search time. Peptides shared with a real protein are kept.
+  .dda_is_contaminant <- function(proteins) {
+    vapply(strsplit(as.character(proteins), ";", fixed = TRUE), function(accs) {
+      accs <- accs[nzchar(accs)]
+      length(accs) > 0 && all(grepl("Cont_", accs, fixed = TRUE))
+    }, logical(1))
+  }
+
   dda_filtered_psms <- reactive({
     req(values$dda_sage_psms)
+    dt <- values$dda_sage_psms
+    # File filter (empty selection = all files)
     sel <- input$dda_file_filter
-    if (is.null(sel) || length(sel) == 0) return(values$dda_sage_psms)
-    # data.table-aware subsetting
-    values$dda_sage_psms[as.character(values$dda_sage_psms$filename) %in% as.character(sel), ]
+    if (!is.null(sel) && length(sel) > 0) {
+      dt <- dt[as.character(dt$filename) %in% as.character(sel), ]
+    }
+    # Contaminant filter — drop Cont_-tagged groups (from the searched contaminant DB)
+    if (isTRUE(input$dda_results_exclude_contaminants %||% TRUE) &&
+        "proteins" %in% names(dt)) {
+      dt <- dt[!.dda_is_contaminant(dt$proteins), ]
+    }
+    dt
   })
 
   output$dda_file_filter_summary <- renderUI({
@@ -871,14 +889,22 @@ server_dda <- function(input, output, session, values, add_to_log) {
     n_filt_psms  <- nrow(dda_filtered_psms())
     n_all_files  <- length(unique(values$dda_sage_psms$filename))
     n_sel_files  <- length(input$dda_file_filter %||% character(0))
+    contam_note  <- ""
+    if (isTRUE(input$dda_results_exclude_contaminants %||% TRUE) &&
+        "proteins" %in% names(values$dda_sage_psms)) {
+      n_contam <- sum(.dda_is_contaminant(values$dda_sage_psms$proteins))
+      if (n_contam > 0)
+        contam_note <- sprintf(" — %s contaminant PSMs hidden",
+                               format(n_contam, big.mark = ","))
+    }
     if (n_sel_files == 0 || n_sel_files == n_all_files) {
       tags$small(style = "color: #6c757d; display: block; margin-top: 6px;",
-        sprintf("Combined view — %s PSMs across %d files.",
-                format(n_all_psms, big.mark = ","), n_all_files))
+        sprintf("Combined view — %s PSMs across %d files%s.",
+                format(n_filt_psms, big.mark = ","), n_all_files, contam_note))
     } else {
       tags$small(style = "color: #1565c0; display: block; margin-top: 6px;",
-        sprintf("Filtered — %s PSMs from %d of %d files.",
-                format(n_filt_psms, big.mark = ","), n_sel_files, n_all_files))
+        sprintf("Filtered — %s PSMs from %d of %d files%s.",
+                format(n_filt_psms, big.mark = ","), n_sel_files, n_all_files, contam_note))
     }
   })
 
@@ -2042,7 +2068,7 @@ cd "$OUT_DIR"
 # Extract unique peptide sequences from all Casanovo .mztab files.
 # mztab PSM rows start with "PSM"; sequence is column 2 (TSV).
 echo "[DIAMOND-chain] extracting peptides from $MZTAB_DIR"
-awk -F"\t" \'$1 == "PSM" { gsub(/[^A-Z]/, "", $2); if (length($2) >= 7) print $2 }\' "$MZTAB_DIR"/*.mztab \
+awk -F"\t" \'$1 == "PSM" { gsub(/\\[[^]]*\\]/, "", $2); gsub(/[^A-Z]/, "", $2); if (length($2) >= 7) print $2 }\' "$MZTAB_DIR"/*.mztab \
   | sort -u > all_casanovo_peptides.txt
 N_PEP=$(wc -l < all_casanovo_peptides.txt)
 echo "[DIAMOND-chain] $N_PEP unique peptides"
@@ -3467,9 +3493,18 @@ echo "[DIAMOND] Done: $(date)"
     blast
   })
 
-  # Filtered blast reactive (respects contaminant exclusion checkbox)
+  # Filtered blast reactive — the DIAMOND BLAST tab shows NOVEL peptides only
+  # (de novo BLAST is meaningful for peptides Sage's DB search missed) and
+  # respects the contaminant exclusion checkbox.
   blast_filtered <- reactive({
     blast <- blast_with_species()
+    cls <- values$dda_casanovo_classification
+    if (!is.null(cls) && !is.null(cls$novel) && nrow(cls$novel) > 0 &&
+        !is.null(blast) && nrow(blast) > 0 && "peptide" %in% names(blast)) {
+      novel_norm <- unique(gsub("I", "L", cls$novel$seq_stripped))
+      blast_norm <- gsub("I", "L", build_dda_canonical_peptide(blast$peptide))
+      blast <- blast[blast_norm %in% novel_norm, ]
+    }
     exclude <- input$dda_exclude_contaminants %||% TRUE
     if (isTRUE(exclude)) {
       blast <- blast[blast$contaminant_type != "Definite", ]
@@ -4785,7 +4820,7 @@ echo "[DIAMOND] Done: $(date)"
 
   observeEvent(input$denovo_confirmed_info_btn, {
     showModal(modalDialog(
-      title = tagList(icon("question-circle"), " Confirmed Peptides"),
+      title = tagList(icon("question-circle"), " Sage DB hits"),
       size = "l", easyClose = TRUE, footer = modalButton("Close"),
       div(style = "font-size: 0.9em; line-height: 1.7;",
         p("Peptides sequenced de novo by Casanovo that were also identified by database search (Sage)."),

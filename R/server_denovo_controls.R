@@ -154,7 +154,7 @@ server_denovo_controls <- function(input, output, session, values) {
         tags$div(class = "card text-center",
           style = "background: #f8f9fa; border-left: 4px solid #2ecc71; padding: 15px;",
           tags$h4(format(n_confirmed, big.mark = ","), style = "margin: 0; color: #2ecc71;"),
-          tags$small("Confirmed (in Sage)")
+          tags$small("Sage DB hits")
         )
       ),
       tags$div(class = "col-md-2",

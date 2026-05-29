@@ -5,6 +5,23 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.11] — 2026-05-29
+
+### Added
+- **"Exclude contaminants" toggle on the DDA/de novo Results page.** A checkbox in the file-filter panel (default ON) drops PSMs whose entire protein group is `Cont_`-tagged (the contaminant FASTA appended at search time — keratins, trypsin, albumin, etc.). Wired into `dda_filtered_psms()` so every downstream view (Length & Motifs, Peptide × File matrix, anchor/cleavage logos) inherits it; the filter summary now reports how many contaminant PSMs are hidden.
+
+### Changed
+- **DIAMOND BLAST tab now shows NOVEL peptides only.** De novo BLAST is only meaningful for peptides Sage's DB search missed, so `blast_filtered()` now restricts the tab to novel-peptide hits (and still respects the contaminant toggle).
+- **Relabeled "Confirmed (in Sage)" → "Sage DB hits"** (summary card, results tab, info modal) to make it clear these are database-search identifications.
+
+### Fixed
+- **De novo peptide cross-references silently returned 0 ("BLAST Hits: 0", novel∩BLAST empty).** Three different mod-strippers disagreed on named modifications: Casanovo's `[Acetyl]`/`[Carbamidomethyl]` were mangled differently by (a) R's `seq_stripped` (`gsub("\\[|\\]","")` left the mod *name* text), (b) the Sage `db_stripped` path, and (c) the DIAMOND sbatch awk (`gsub(/[^A-Z]/,"")` leaked the mod's leading capital). Introduced one canonical `build_dda_canonical_peptide()` in `R/helpers_dda.R` (strips `[...]`, `(UniMod:N)`, `+57.02`, keeps only A-Z) used by `seq_stripped`, the Sage `db_stripped` path, and matched by the regenerated sbatch awk. Per CLAUDE.md Architectural Rule #3 (one definition per concept). _Existing BLAST results for **modified** peptides were written with the old mangling, so a BLAST re-run is needed to recover those; unmodified novel hits resolve immediately._
+
+## [3.11.10] — 2026-05-29
+
+### Fixed
+- **DDA/de novo result load failed with `value.var values [intensity] are not found in 'data'`.** The Sage LFQ parser in `R/helpers_dda.R` assumed `lfq.tsv` was long-format (`proteins`/`filename`/`intensity` columns) and called `dcast(..., value.var = "intensity")`. But Sage v0.14.7's actual `lfq.tsv` is **wide + peptide-level**: id columns (`peptide`, `charge`, `proteins`, `q_value`, `score`, `spectral_angle`) followed by one raw-intensity column per run file. The parser now detects the wide format, treats the per-run columns as the intensity matrix, and rolls peptides up to protein groups by summing intensities per run (legacy long-format input still supported for back-compat). Caught loading the Ocelot Sage search (9 runs).
+
 ## [3.11.9] — 2026-05-29
 
 ### Fixed

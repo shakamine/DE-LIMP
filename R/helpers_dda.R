@@ -4,6 +4,25 @@
 #  Called from: server_dda.R
 # ==============================================================================
 
+#' Canonical bare-amino-acid form of a peptide.
+#'
+#' The SINGLE definition used to cross-reference Sage DB-search peptides,
+#' Casanovo de novo peptides, and DIAMOND BLAST query peptides. All three MUST
+#' normalize identically or `%in%` joins between them silently return 0 (the
+#' v3.11.x "BLAST Hits: 0" / "no matched spectra" bug — three different
+#' strippers disagreed on named mods). Strips every notation the tools emit:
+#'   [Acetyl] / [Carbamidomethyl] named, [+57.02] / +57.02 numeric,
+#'   (UniMod:4), and terminal "[Mod]-" hyphens. Keeps only A-Z.
+#' NOTE: keep the awk in the DIAMOND sbatch generator (server_dda.R) in sync —
+#'   `gsub(/\[[^]]*\]/,"",$2); gsub(/[^A-Z]/,"",$2)`.
+build_dda_canonical_peptide <- function(x) {
+  x <- as.character(x)
+  x <- gsub("\\[[^]]*\\]", "", x)          # [Acetyl], [Carbamidomethyl], [+57.02]
+  x <- gsub("\\(UniMod:[0-9]+\\)", "", x)  # (UniMod:4)
+  x <- gsub("\\+[0-9.]+", "", x)           # bare +57.02
+  toupper(gsub("[^A-Za-z]", "", x))        # drop hyphens, dots, digits, spaces
+}
+
 #' Generate a Sage search config JSON
 #'
 #' @param fasta_path Path to reference FASTA
@@ -196,12 +215,31 @@ parse_sage_results <- function(
     NSpectra  = .N
   ), by = proteins]
 
-  # LFQ matrix: long -> wide
+  # LFQ matrix -> protein x run, log2.
+  # Sage v0.14.7 lfq.tsv is WIDE + peptide-level: id columns
+  # (peptide, charge, proteins, q_value, score, spectral_angle) followed by
+  # one raw-intensity column per run file. We roll peptides up to protein
+  # groups by summing intensities per run. (A legacy long-format path —
+  # proteins/filename/intensity — is still supported for back-compat.)
   if (!is.null(lfq_path)) {
     lfq <- data.table::fread(lfq_path)
-    lfq_wide <- data.table::dcast(lfq, proteins ~ filename, value.var = "intensity")
-    rownames_col <- lfq_wide$proteins
-    lfq_mat <- as.matrix(lfq_wide[, -"proteins", with = FALSE])
+    if (all(c("filename", "intensity") %in% names(lfq))) {
+      lfq_wide <- data.table::dcast(lfq, proteins ~ filename,
+                                    value.var = "intensity", fun.aggregate = sum)
+      rownames_col <- lfq_wide$proteins
+      lfq_mat <- as.matrix(lfq_wide[, -"proteins", with = FALSE])
+    } else {
+      id_cols   <- intersect(c("peptide", "charge", "proteins", "q_value",
+                               "score", "spectral_angle", "filename"), names(lfq))
+      file_cols <- setdiff(names(lfq), id_cols)
+      if (length(file_cols) == 0)
+        stop("LFQ file '", basename(lfq_path), "' has no per-run intensity columns ",
+             "(found: ", paste(names(lfq), collapse = ", "), ")")
+      agg <- lfq[, lapply(.SD, function(x) sum(as.numeric(x), na.rm = TRUE)),
+                 by = proteins, .SDcols = file_cols]
+      rownames_col <- agg$proteins
+      lfq_mat <- as.matrix(agg[, file_cols, with = FALSE])
+    }
     rownames(lfq_mat) <- rownames_col
 
     # Log2 transform (Sage outputs raw intensities)
@@ -930,9 +968,9 @@ parse_casanovo_mztab <- function(mztab_paths, score_threshold = -Inf) {
     dt <- dt[score >= score_threshold]
   }
 
-  # Strip modifications: PEPTIDE[+15.995] -> PEPTIDE, M+15.995FLLK -> MFLLK
-  dt$seq_stripped <- gsub("\\+[0-9.]+", "", dt$sequence)
-  dt$seq_stripped <- gsub("\\[|\\]", "", dt$seq_stripped)
+  # Strip modifications to bare amino acids via the canonical normalizer so
+  # Casanovo peptides match Sage DB peptides AND the DIAMOND query FASTA.
+  dt$seq_stripped <- build_dda_canonical_peptide(dt$sequence)
 
   # I/L normalization for cross-reference (leucine = isoleucine in MS)
   dt$seq_norm <- gsub("I", "L", dt$seq_stripped)
@@ -1194,10 +1232,7 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms, db_engine = "Sage") {
 
   # Normalize database search peptides: strip modifications + I/L matching
   # Works for both Sage (C[+57.0215]) and DIA-NN (already stripped) peptide formats
-  db_stripped <- gsub("\\+[0-9.]+", "", sage_psms$peptide)
-  db_stripped <- gsub("\\[|\\]", "", db_stripped)
-  # Also strip UniMod format from DIA-NN: e.g. C(UniMod:4) -> C
-  db_stripped <- gsub("\\(UniMod:[0-9]+\\)", "", db_stripped)
+  db_stripped <- build_dda_canonical_peptide(sage_psms$peptide)
   db_peps_norm <- unique(gsub("I", "L", db_stripped))
 
   # Classify each Casanovo sequence

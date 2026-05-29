@@ -2805,6 +2805,12 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                   ),
                   selected = "combined", inline = FALSE)
               ),
+              div(style = "display: flex; align-items: center; gap: 12px; margin-top: 8px;",
+                tags$strong("Contaminants:", style = "min-width: 140px;"),
+                checkboxInput("dda_results_exclude_contaminants",
+                  "Exclude contaminant proteins (Cont_ tagged: keratins, trypsin, albumin, etc.)",
+                  value = TRUE)
+              ),
               uiOutput("dda_file_filter_summary")
             )
           ),
@@ -2860,10 +2866,10 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                 DT::DTOutput("dda_peptide_file_matrix")
               )
             ),
-            nav_panel("Confirmed Peptides",
+            nav_panel("Sage DB hits",
               div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
                 actionButton("denovo_confirmed_info_btn", icon("question-circle"),
-                  title = "What are Confirmed Peptides?", class = "btn-outline-info btn-sm")
+                  title = "What are Sage DB hits?", class = "btn-outline-info btn-sm")
               ),
               DT::DTOutput("dda_denovo_confirmed_table"),
               # Per-residue confidence visualization (Priority 2)
