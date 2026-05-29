@@ -1836,7 +1836,15 @@ server_search <- function(input, output, session, values, add_to_log,
     target <- browse_target()
 
     if (target == "raw") {
-      updateTextInput(session, "ssh_raw_data_dir", value = path)
+      # If a sibling module asked to redirect (e.g. server_dda's Browse
+      # button), write the picked path to that input instead and reset.
+      redirect <- isolate(values$ssh_browse_target_input)
+      if (is.character(redirect) && nzchar(redirect)) {
+        updateTextInput(session, redirect, value = path)
+        values$ssh_browse_target_input <- NULL
+      } else {
+        updateTextInput(session, "ssh_raw_data_dir", value = path)
+      }
       removeModal()
     } else if (target == "fasta") {
       updateTextInput(session, "ssh_fasta_browse_dir", value = path)

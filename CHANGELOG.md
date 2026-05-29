@@ -5,6 +5,99 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.9] — 2026-05-29
+
+### Fixed
+- **DIAMOND BLAST failed on de novo peptides via DIAMOND's DNA auto-detect ("only contain DNA letters").** DIAMOND samples the query FASTA to guess protein-vs-nucleotide; because the Casanovo de novo peptide set is short and front-loaded with poly-alanine runs, DIAMOND mistook the input for DNA and aborted in ~13s with `Error: The sequences are expected to be proteins but only contain DNA letters. Use the option --ignore-warnings to proceed.` — leaving a 0-byte `blast_results_swissprot.tsv`. Distinct from the v3.11.8 mod-tag strip fix (that worked; the FASTA is clean amino acids). Added `--ignore-warnings` to **all** de novo `diamond blastp` invocations: the auto-chain SwissProt→TrEMBL pair and the single-DB variant in `R/server_dda.R`, plus the forward/reversed target-decoy FDR pair in `R/server_denovo_viz.R`. Diagnosed and re-run against the Ocelot search (316,313 unique de novo peptides). _Note: the 5 call sites are near-duplicate `diamond blastp` blocks — a future refactor should centralize them per CLAUDE.md Architectural Rule #3._
+
+## [3.11.8] — 2026-05-29
+
+### Added
+- **Per-file filter on DDA Results panel.** A multi-select dropdown at the top of the Results page lets the user pick which source mzML/.d files contribute to every downstream view (length hist, anchor logos, cleavage motifs, peptide × file matrix). Empty selection = combined view (default, same as before). Selecting a subset narrows everything in one place. Summary line shows e.g. "Filtered — 145,632 PSMs from 3 of 9 files."
+- **Combined / Per-file compare mode.** A radio next to the file filter switches between aggregating across selected files (default) and rendering one trace per file (multi-line length hist, multi-bar anchor + cleavage charts). Lets users compare across replicates or experimental conditions in the same search.
+- **Peptide × File matrix sub-tab on DDA Results.** New `DT::renderDT` table where rows are unique stripped peptides, columns are source files, and cells are PSM counts. Pre-sorted by total PSM count. Has search/filter row on every column + Copy/CSV/Excel export. Lets the user spot peptides unique to one condition (high count in one file, 0 in others). Fixed leftmost 4 columns (peptide, length, n_files, total) so they don't scroll off when there are many files.
+- **`dda_filtered_psms()` reactive** is the new single source of truth for the Length & Motifs renderers, so wiring a future viz against it inherits filtering + compare-mode for free.
+
+### Fixed
+- **DIAMOND BLAST awk strip rejected Casanovo mod tags.** The auto-chain DIAMOND sbatch in `R/server_dda.R` (and a one-off variant I submitted manually for the ocelot run) only stripped `[+\-0-9.()]` from the Casanovo peptide column, leaving `[Oxidation]` / `[Deamidation]` brackets intact in the FASTA query. DIAMOND then errored at line 10 with `Invalid character ([) in sequence` and exited in 14 seconds. Replaced the strip with `gsub(/[^A-Z]/, "", $2)` — keep only uppercase amino acid letters. Same fix applied to the v3.11.7 standalone DIAMOND fallback. Verified against ocelot Casanovo mztabs (~441k PSMs).
+
+## [3.11.7] — 2026-05-28
+
+### Added
+- **Length & Motifs sub-tab on the DDA Results panel** — first viz lens for the new mode-aware framing.
+  - **Universal**: peptide length distribution bar chart (always shown). Bars colored by mode signature: HLA-I highlights 8–11; HLA-II highlights 13–18; peptidomics highlights 5–25; standard tryptic shows all neutral.
+  - **HLA-only** (only renders for `hla_class_i` / `hla_class_ii` modes): P2 + PΩ anchor residue frequency bar chart, grouped by position. Helps fingerprint donor HLA alleles (e.g. A*02:01 → L at P2 + L/V at PΩ).
+  - **Peptidomics-only** (only renders for `peptidomics` mode): N-term + C-term flanking residue frequencies, grouped. Diagnoses endogenous protease activity (e.g. high C-term K/R = trypsin contamination).
+- **`current_dda_mode()` reactive** finds the loaded search's mode by matching `values$dda_output_dir` against `j$output_dir` in the queue rows. Defaults to "standard" if no match. Drives the mode-specific viz visibility flags `output$dda_mode_is_hla` and `output$dda_mode_is_peptidomics`.
+- All three plot renderers use `plotly::renderPlotly` per CLAUDE.md's bslib safety rule (renderPlot crashes with `invalid quartz()` inside `navset_card_tab` on macOS). SVG export wired via `toImageButtonOptions`.
+
+### Fixed
+- **Casanovo v5 `--force_overwrite` doesn't survive glob conflicts.** When a stale partial mztab existed in the output dir from a prior crashed run, Casanovo v5 refused to overwrite it (despite the flag) and exited with `FileExistsError`. Patched `generate_casanovo_sbatch()` to `rm -f "$MZTAB_DIR/${BASENAME}_sequence."*` at task start, making each array task idempotent regardless of leftover artifacts from earlier crashes. Caught when ocelot search tasks 1+2 failed after the Blackwell-GPU run left 3.7-KB stub mztabs in the dir.
+
+## [3.11.6] — 2026-05-28
+
+### Added
+- **Mode-aware DDA Export ZIP for HuggingFace Spaces viewing.** New `generate_dda_export_zip()` helper in `R/helpers_dda.R` bundles the current loaded DDA search into a flat .zip designed to render natively in HF Spaces (markdown + CSV + TSV + mztab — all formats HF previews inline). Uses the `safe_section()` pattern from CLAUDE.md architectural rule #4, so any missing artifact gets logged into MANIFEST.txt with a `[SKIPPED]` line instead of silently disappearing.
+  - **Common to every mode**: `methods.md`, `settings.json` (the exact Sage v0.14.7 config that ran), `sage_results.tsv`, `peptide_length_distribution.csv`, `casanovo/*.mztab` (if Casanovo ran), `diamond_hits.tsv` (if BLAST ran), `MANIFEST.txt`, `PROMPT.md`.
+  - **Mode-specific summaries**: HLA modes get `hla_anchor_residues.csv` (P2 + PΩ frequency table — the signature HLA fingerprint). Peptidomics mode gets `peptidomics_cleavage_residues.csv` (N-/C-terminal flank percentages — protease motif fingerprint).
+  - **PROMPT.md** is mode-aware: includes interpretation hints specific to the analysis ("a clean HLA-I prep shows a sharp 9-mer peak"; "high C-term K/R = trypsin contamination").
+- **`downloadButton("dda_export_zip")` on the De Novo / DDA Results panel**, visible once results have loaded (`output.denovo_has_data` gates it). Filename includes mode + timestamp so multiple exports don't collide.
+- **Plot SVG/PNG bundling deferred** to v3.11.7+ once the mode-specific viz pages land — current bundle is data-only, but data-only is enough for HF viewing since CSVs render in HF's dataset viewer.
+
+### Changed
+- **Navbar "De Novo" dropdown renamed to "DDA workflows"** with three workflow-specific landing panels (De Novo Search, Peptidomics, HLA / MHC) above the existing Results panel. Each landing panel describes the workflow's enzyme/length/mods/charge profile, lists the downstream visualizations the user will get, and has a single "Configure → search" button that flips to the Run Search tab with `acquisition_mode = "dda"` and the correct `dda_preset` pre-selected. HLA panel also has a Class I / Class II radio so the right length window gets locked in. This turns the abstract "mode" dropdown into a discoverable entry point — a researcher who isn't sure where to start can browse the workflows and pick the one that matches their experiment.
+
+## [3.11.5] — 2026-05-28
+
+### Added
+- **Peptidomics and HLA / MHC class I + II Sage presets.** Added 3 new entries to the DDA "Analysis mode" dropdown alongside the existing Standard / Phospho / TMT options. Each preset sets the right enzyme rule (nonspecific = `cleave_at = ""`), peptide length window, mass range, and variable mod set per published immunopeptidomics / peptidomics practice:
+  - **Peptidomics**: nonspecific, 5–25 AA, 400–5000 Da. Mods: oxidation, pyro-Glu (N-term Q/E), C-term amidation (−0.984), N-term acetylation.
+  - **HLA class I**: nonspecific, 8–12 AA, 700–1500 Da. Mods: oxidation + deamidation (N/Q). Numbers from BOWIE's preset table (Michael Krawitzky's Ziggy).
+  - **HLA class II**: nonspecific, 13–25 AA, 1300–3000 Da. Mods: oxidation + deamidation (N/Q).
+- **`generate_sage_config()` refactored to a preset table.** Each preset is now a single list-entry with explicit `cleave_at`, `min_len`, `max_len`, `peptide_min/max_mass`, `variable_mods`, `add_tmt_static`. Adding a new analysis mode is a 1-row change to the table — no scattered `if (preset == ...)` branches. Backward-compatible: standard/phospho/tmt produce the same JSON as before.
+- **Mode hint under the preset selector**: live text describing what each mode does (enzyme, length, mass window, mods) so picking "HLA Class I" isn't magical.
+- **`mode` field added to the DDA queue entry**: stamped at submit time from the preset selector, persisted to `~/.delimp_dda_queue.rds`. Will drive the future mode-specific results-page routing (peptidomics-results / HLA-results pages, to be wired next).
+
+## [3.11.4] — 2026-05-28
+
+### Fixed
+- **DDA queue per-engine columns stayed "running" forever.** Brett noticed the Sage column never flipped to "done" after his ocelot search completed even though the pipeline status moved on to loading Casanovo. Root cause: the Sage and Casanovo polling observers in `R/server_dda.R` only updated the pipeline-level `values$dda_status` / `values$dda_casanovo_status`, never writing back to the queue entry's per-engine `sage_status` / `casanovo_status` fields that the `engine_badge()` cell reads. Added two helpers (`update_queue_sage_status`, `update_queue_casanovo_status`) that find the matching row by Sage job_id and write `"done"` / `"partial"` / `"failed"` into the per-engine column at the COMPLETED/FAILED detection point. Also covered the single-job-not-array Casanovo failure branch.
+
+## [3.11.3] — 2026-05-28
+
+### Fixed
+- **Sage sbatch hit `syntax error near unexpected token '||'`** because the line-continuation backslashes after the apptainer-msconvert invocation got stripped during the v3.11.2 edit — bash then read each line as its own command, and the standalone `|| { ... }` errored at parse time, killing the job in 1 second. Collapsed the msconvert call to a single line and replaced the `\` continuations with an `if !  ... ; then  ...  fi` block. `bash -n` on the rendered sbatch now passes.
+- **DDA queue showed `DDA_<timestamp>` instead of the experiment name you typed.** The queue-row builder in `server_dda.R` read `input$dda_analysis_name`, but the UI control is actually `input$dda_experiment_name` — the names drifted apart at some point and the queue always silently fell back to the auto timestamp. The SLURM job names and on-disk output dir were always correct because they were already wired through `exp_name`; only the queue display was wrong. Now uses `exp_name` directly. Renamed the Casanovo-prep SBATCH job from `delimp_mgf_*` to `delimp_casanovo_prep_*` (and the log filenames) since it no longer does MGF conversion for .raw inputs — Sage's mzML output is reused.
+- **"Refresh GPU queue" link took ~45s or appeared to do nothing** — two bugs in `probe_gpu_queue()`: (1) it was reading `values$ssh_config` (wrong name — the DDA module uses the `dda_ssh_config()` reactive that builds the list from `input$ssh_host/user/key_path/port/modules`), so the probe never had credentials and silently bailed; (2) it didn't pass `sbatch_path` to `check_casanovo_gpu_queue()`, forcing each of the 3 SLURM calls into login-shell mode (~15s each on Hive). Now uses `dda_ssh_config()` + `values$ssh_sbatch_path` (full path to sbatch → skips login shell). Also shows a "Probing gpu-a100 queue..." placeholder while the probe is in flight so the user can see the click registered.
+
+## [3.11.2] — 2026-05-28
+
+### Fixed
+- **Sage on Thermo `.raw` data now actually works.** The DDA submit flow was passing `.raw` paths straight into Sage v0.14.7's `mzml_paths`. Sage silently completes with 0 PSMs because it can only parse mzML (gotcha documented in CLAUDE.md but the code path didn't enforce it). Brett's first ocelot test "completed" in 17s with 0 hits because of this. `generate_sage_sbatch()` now auto-detects `.raw` files in the input directory, calls msconvert via the pwiz Apptainer container (with the required `--bind /quobyte:/quobyte`) to convert each to mzML under `$OUTPUT_DIR/mzml/`, and passes the converted files to Sage on the command line (which overrides `mzml_paths` per Sage v0.14.7 docs). Skip-if-present so reruns don't reconvert. .d files still go straight to Sage as before.
+- **DDA Casanovo MGF conversion no longer silently exits 2.** The conversion sbatch used `EXISTING_MGF=$(ls -1 "$RAW_DIR"/*.mgf 2>/dev/null | wc -l)` under `set -euo pipefail` — when no .mgf files exist, `ls` exits 2 and `pipefail` propagates through `wc -l`, killing the script before it gets to .d/.raw conversion. Replaced both `ls -1 *.mgf` sites and `ls -1d *.d` and `ls -1 *.raw` with `find -maxdepth 1` (always exits 0), and added `shopt -s nullglob` for the `for RAW_FILE in *.raw` loop. Also added the missing `--bind /quobyte:/quobyte` to the MGF-convert msconvert invocation (same Apptainer-doesn't-auto-bind gotcha).
+- **Experiment name no longer silently defaults to "dda_search".** The textInput had a hardcoded default of `"dda_search"` that any new submission would land in, mixing into prior runs in the same folder. Brett's first ocelot test landed in an April 2 working directory that had stale `mzml/`, `denovo/`, and `results.sage.profile.tsv` from previous experiments. UI now starts blank with a placeholder; server rejects submit if no name given.
+
+### Changed
+- **Casanovo reuses Sage's mzML output instead of double-converting.** Previously the DDA pipeline ran msconvert twice on every .raw file — once for Sage (.raw → mzML, now baked into Sage sbatch) and once for Casanovo (.raw → MGF). Casanovo v5 reads mzML directly, so the Casanovo file-list-build step now just `find`s `$OUTPUT_DIR/mzml/*.mzML` (produced by Sage) and concatenates them with any `.d → MGF` outputs into a unified Casanovo input list. The launcher now passes `--dependency=afterok:SAGE_ID` to the convert step so Casanovo waits for Sage's mzML conversion to finish. Net effect: half the msconvert work, half the disk usage, simpler dependency chain. The Casanovo array task now strips `.mgf` / `.mzML` / `.mzml` extensions to derive output basenames.
+
+## [3.11.1] — 2026-05-28
+
+### Added
+- **Casanovo v5 support in DDA pipeline.** New routing in `R/server_dda.R` reads `input$dda_casanovo_model` and auto-resolves the conda env + checkpoint + CLI version:
+  - `casanovo_v5_*` → `/quobyte/proteomics-grp/conda_envs/casanovo5` (Casanovo 5.0.0, Python 3.13, depthcharge-ms 0.4.8 with `depthcharge.tokenizers`).
+  - `casanovo_v4_*` → `/quobyte/proteomics-grp/conda_envs/cassonovo_env` (Casanovo 4.3.0, Python 3.10) — unchanged behavior.
+  - The v4 env CANNOT load v5 ckpts (fails at unpickle with `ModuleNotFoundError: depthcharge.tokenizers`), so the two must be paired explicitly.
+- **`generate_casanovo_sbatch(casanovo_version = "v4" | "v5")` branches the CLI** since v5 broke API compatibility: v4 uses `--output FULL.mztab`, v5 splits it into `--output_dir DIR --output_root NAME` and adds `--force_overwrite`. Verified end-to-end against PXD048461 mammoth Orbitrap DDA data (smoke job 14541990 on Hive `casanovo5` env, v5 ckpt loads cleanly + runs predictions, 4,728 spectra sequenced in 6 min on 8 CPU cores).
+- **GPU vs CPU compute toggle for Casanovo** with live queue probe. New `check_casanovo_gpu_queue()` helper in `R/helpers_dda.R` issues 3 cheap SLURM calls (squeue PD + squeue R + sinfo with Gres/GresUsed) and returns pending/running counts plus per-node GPU allocation, counting only GPUs on nodes that actually accept new jobs (drain/down/maint nodes excluded from "free" count). The DDA Casanovo accordion gained a `radioButtons("dda_casanovo_compute")` (GPU / CPU) that auto-flips to whichever the probe recommends — heuristic: ≤3 pending + ≥1 free usable GPU → GPU; ≥10 pending or 0 usable free → CPU. Compute mode threads through `generate_casanovo_sbatch(compute_mode = ...)` which swaps the SBATCH header to `high` partition, drops `--gres=gpu:1`, bumps CPUs to 16 and walltime to 8h, and exports `CUDA_VISIBLE_DEVICES=""` so PyTorch stays on CPU. Probe fires when the user ticks "Run Casanovo" on and on a manual Refresh link.
+- **Casanovo model dropdown** (replaces freeform textInput) with explicit choices `casanovo_v5_0_0` (default, recommended) and `casanovo_v4_2_0` — eliminates typos that would route to a nonexistent ckpt.
+
+### Fixed
+- **Sage fragment tolerance unit + value.** The DDA UI control was labeled "Fragment tol. (Da)" with default 0.05, and `generate_sage_config()` was applying a fake `* 1000` conversion to fake-build a ppm range. Sage v0.14.7 takes ppm directly (per `DOCS.md`: `fragment_tol: Dictionary with either ppm or da as keys`). Renamed the parameter `fragment_tol_da` → `fragment_tol_ppm`, set the UI default to 20 ppm (typical for Orbitrap Exploris-class DDA), removed the bogus multiplier, and updated search_info.md text + queue entry defaults to match. Anyone who ran a DDA search since the helper was first written was searching ±50 ppm instead of the intended fragment window.
+
+### Documentation
+- Added Casanovo v5 env gotcha + CLI delta to `CLAUDE.md`.
+- Split Casanovo v4/v5 env entries in `docs/HPC_PATHS.md` with explicit ckpt pairing.
+
 ## [3.11.0] — 2026-05-26 / 27
 
 Reference registry expanded (2026-05-27):

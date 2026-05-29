@@ -61,7 +61,8 @@ apptainer exec --bind /quobyte:/quobyte \
 | Downloads | `/quobyte/proteomics-grp/de-limp/downloads/` |
 | Cascadia training | `/quobyte/proteomics-grp/de-limp/cascadia/training/` |
 | Cascadia env | `/quobyte/proteomics-grp/envs/cascadia5/` |
-| Casanovo env | `/quobyte/proteomics-grp/conda_envs/cassonovo_env/` (note typo) |
+| Casanovo v4 env | `/quobyte/proteomics-grp/conda_envs/cassonovo_env/` (typo `casso`; Casanovo 4.3.0, Python 3.10, depthcharge-ms ~0.2.x). Use with `casanovo_v4_2_0.ckpt`. |
+| Casanovo v5 env | `/quobyte/proteomics-grp/conda_envs/casanovo5/` (Casanovo 5.0.0, Python 3.13, depthcharge-ms 0.4.8 with `depthcharge.tokenizers`). Required for `casanovo_v5_0_0.ckpt`. v4 env cannot load v5 ckpts (`ModuleNotFoundError: depthcharge.tokenizers`). |
 | Sage binary | `/quobyte/proteomics-grp/de-limp/cascadia/sage-v0.14.7-x86_64-unknown-linux-gnu/sage` |
 | Cascadia model | `/quobyte/proteomics-grp/de-limp/cascadia/models/cascadia.ckpt` |
 | Casanovo model | `/quobyte/proteomics-grp/bioinformatics_programs/casanovo_modles/casanovo_v4_2_0.ckpt` (note typo) |

@@ -88,6 +88,124 @@ server_dda <- function(input, output, session, values, add_to_log) {
   trembl_dmnd    <- config$blast$trembl_dmnd %||%
     "/quobyte/proteomics-grp/bioinformatics_programs/blast_dbs/uniprot_trembl"
 
+  # ---- DDA workflow shortcuts → jump to Run Search with mode pre-set ----
+  # The DDA workflows dropdown has 3 friendly landing pages (De Novo,
+  # Peptidomics, HLA). Each has a button that flips the user to the actual
+  # Run Search tab with acquisition_mode=DDA and the right preset selected.
+  dda_workflow_jump <- function(preset_value) {
+    updateRadioButtons(session, "acquisition_mode", selected = "dda")
+    updateSelectInput(session, "dda_preset", selected = preset_value)
+    nav_select(id = "main_tabs", selected = "search_tab", session = session)
+  }
+  observeEvent(input$dda_workflow_open_denovo,      dda_workflow_jump("standard"))
+  observeEvent(input$dda_workflow_open_peptidomics, dda_workflow_jump("peptidomics"))
+  observeEvent(input$dda_workflow_open_hla, {
+    # User picked Class I vs Class II in the radio on the HLA landing panel
+    chosen <- input$dda_workflow_hla_class %||% "hla_class_i"
+    dda_workflow_jump(chosen)
+  })
+
+  # ---- Preset / mode hint (visible under the preset selector) ----
+  # Lets the user see at a glance what enzyme / length / mass / charge
+  # window each mode uses, so picking HLA Class I doesn't feel magical.
+  output$dda_preset_hint <- renderUI({
+    p <- input$dda_preset %||% "standard"
+    info <- switch(p,
+      "standard"     = "Trypsin/P, 7–50 AA, ox(M) + acetyl-Nt. Default proteomics.",
+      "phospho"      = "Trypsin/P, 7–50 AA, +Phospho(STY) variable mods. PhosphoSTY discovery.",
+      "tmt"          = "Trypsin/P, 7–50 AA, TMT static (Nt + K). 11-plex iTRAQ-style runs.",
+      "peptidomics"  = "Nonspecific, 5–25 AA, 400–5000 Da. Mods: ox(M), pyro-Glu, C-term amidation, Nt acetyl. Endogenous peptides.",
+      "hla_class_i"  = "Nonspecific, 8–12 AA, 700–1500 Da. Mods: ox(M), deamid(N/Q). Charge 1–3 (z=1 dominant on TOF).",
+      "hla_class_ii" = "Nonspecific, 13–25 AA, 1300–3000 Da. Mods: ox(M), deamid(N/Q).",
+      "(unknown preset)"
+    )
+    tags$small(style = "color: #6c757d; display: block; margin-top: 4px; line-height: 1.3;",
+               icon("circle-info"), " ", info)
+  })
+
+  # ---- Casanovo GPU vs CPU compute toggle --------------------------------
+  # Live probe of gpu-a100 queue depth + node state. Drives the hint text
+  # under the GPU/CPU radio so the user can pick the faster path.
+  gpu_queue_state <- reactiveVal(NULL)
+  gpu_queue_last_check <- reactiveVal(0)
+
+  probe_gpu_queue <- function() {
+    if (!isTRUE(values$ssh_connected)) return(invisible(NULL))
+    ssh_cfg <- tryCatch(dda_ssh_config(), error = function(e) NULL)
+    if (is.null(ssh_cfg)) return(invisible(NULL))
+    # Show a brief "probing" placeholder so the user knows it's working
+    gpu_queue_state(list(success = FALSE,
+                         reason  = "Probing gpu-a100 queue...",
+                         recommend = "gpu"))
+    res <- tryCatch(
+      check_casanovo_gpu_queue(
+        ssh_cfg, "gpu-a100",
+        sbatch_path = values$ssh_sbatch_path   # full sbatch path → skip login_shell (fast)
+      ),
+      error = function(e) {
+        list(success = FALSE, reason = paste("Probe failed:", e$message),
+             recommend = "gpu")
+      }
+    )
+    gpu_queue_state(res)
+    gpu_queue_last_check(as.numeric(Sys.time()))
+    # Auto-flip the radio to whatever the probe recommends (user can override).
+    if (isTRUE(res$success) && !is.null(res$recommend) &&
+        !identical(input$dda_casanovo_compute, res$recommend)) {
+      updateRadioButtons(session, "dda_casanovo_compute",
+                        selected = res$recommend)
+    }
+  }
+
+  # Probe when the user opens the Casanovo accordion section
+  observeEvent(input$dda_run_casanovo, {
+    if (isTRUE(input$dda_run_casanovo)) probe_gpu_queue()
+  }, ignoreInit = TRUE)
+
+  # Manual refresh button
+  observeEvent(input$dda_refresh_gpu_queue, {
+    probe_gpu_queue()
+  })
+
+  output$dda_gpu_queue_hint <- renderUI({
+    s <- gpu_queue_state()
+    if (is.null(s)) {
+      return(tags$small(
+        style = "color: #6c757d;",
+        icon("circle-info"),
+        " GPU queue not checked yet. Toggle Casanovo on, or click Refresh."
+      ))
+    }
+    if (!isTRUE(s$success)) {
+      return(tags$small(style = "color: #b16e1f;",
+                        icon("triangle-exclamation"), " ", s$reason))
+    }
+    badge_color <- if (identical(s$recommend, "gpu")) "#28a745" else "#dc3545"
+    rec_label   <- if (identical(s$recommend, "gpu"))
+                     "GPU recommended" else "CPU recommended"
+    last_chk <- gpu_queue_last_check()
+    age_sec  <- if (last_chk > 0) round(as.numeric(Sys.time()) - last_chk) else NA
+    tags$div(
+      style = "font-size: 12px; margin: 4px 0;",
+      tags$span(
+        style = sprintf(
+          "display: inline-block; padding: 2px 8px; border-radius: 10px; background: %s; color: white; font-weight: 600;",
+          badge_color),
+        rec_label
+      ),
+      tags$span(style = "margin-left: 8px; color: #495057;",
+        sprintf("%d pending · %d running · %d/%d GPUs free on usable nodes",
+                s$pending %||% 0L, s$running %||% 0L,
+                s$gpus_free %||% 0L, s$gpus_total %||% 0L)
+      ),
+      tags$br(),
+      tags$small(style = "color: #6c757d;",
+        s$reason,
+        if (!is.na(age_sec)) sprintf("  (refreshed %ds ago)", age_sec) else ""
+      )
+    )
+  })
+
   # --- Mode observer: sync input to reactive values ---
   observeEvent(input$acquisition_mode, {
     values$acquisition_mode <- input$acquisition_mode
@@ -719,6 +837,289 @@ server_dda <- function(input, output, session, values, add_to_log) {
   })
   outputOptions(output, "denovo_has_data", suspendWhenHidden = FALSE)
 
+  # ─── Per-file filter ──────────────────────────────────────────────────
+  # Every downstream viz (length hist, anchor logos, cleavage motifs,
+  # confirmed/novel tables, etc.) reads from `dda_filtered_psms()` instead
+  # of `values$dda_sage_psms` directly. Empty selection = show all files.
+  observe({
+    req(values$dda_sage_psms)
+    files <- sort(unique(as.character(values$dda_sage_psms$filename %||% character(0))))
+    if (length(files) == 0) return()
+    # Strip path + extension for display
+    short <- basename(files)
+    short <- sub("\\.(mzML|raw|d)$", "", short, ignore.case = TRUE)
+    names(files) <- short
+    updateSelectizeInput(session, "dda_file_filter",
+      choices = files, selected = character(0), server = TRUE)
+  })
+
+  observeEvent(input$dda_file_filter_all, {
+    updateSelectizeInput(session, "dda_file_filter", selected = character(0))
+  })
+
+  dda_filtered_psms <- reactive({
+    req(values$dda_sage_psms)
+    sel <- input$dda_file_filter
+    if (is.null(sel) || length(sel) == 0) return(values$dda_sage_psms)
+    # data.table-aware subsetting
+    values$dda_sage_psms[as.character(values$dda_sage_psms$filename) %in% as.character(sel), ]
+  })
+
+  output$dda_file_filter_summary <- renderUI({
+    req(values$dda_sage_psms)
+    n_all_psms   <- nrow(values$dda_sage_psms)
+    n_filt_psms  <- nrow(dda_filtered_psms())
+    n_all_files  <- length(unique(values$dda_sage_psms$filename))
+    n_sel_files  <- length(input$dda_file_filter %||% character(0))
+    if (n_sel_files == 0 || n_sel_files == n_all_files) {
+      tags$small(style = "color: #6c757d; display: block; margin-top: 6px;",
+        sprintf("Combined view — %s PSMs across %d files.",
+                format(n_all_psms, big.mark = ","), n_all_files))
+    } else {
+      tags$small(style = "color: #1565c0; display: block; margin-top: 6px;",
+        sprintf("Filtered — %s PSMs from %d of %d files.",
+                format(n_filt_psms, big.mark = ","), n_sel_files, n_all_files))
+    }
+  })
+
+  # ─── Current loaded mode (drives mode-specific viz + ZIP export) ──────
+  # Looks up the mode tag from the queue row whose output_dir matches the
+  # currently loaded search. Falls back to "standard" if no match found.
+  current_dda_mode <- reactive({
+    od <- values$dda_loaded$output_dir %||% values$dda_output_dir
+    if (is.null(od)) return("standard")
+    jobs <- values$dda_jobs %||% list()
+    for (j in jobs) {
+      if (identical(j$output_dir, od)) return(j$mode %||% "standard")
+    }
+    "standard"
+  })
+
+  output$dda_mode_is_hla <- reactive({
+    current_dda_mode() %in% c("hla_class_i", "hla_class_ii")
+  })
+  outputOptions(output, "dda_mode_is_hla", suspendWhenHidden = FALSE)
+
+  output$dda_mode_is_peptidomics <- reactive({
+    identical(current_dda_mode(), "peptidomics")
+  })
+  outputOptions(output, "dda_mode_is_peptidomics", suspendWhenHidden = FALSE)
+
+  # ─── Length distribution (universal for every DDA mode) ─────────────────
+  .dda_clean_peptide <- function(x) gsub("\\[.*?\\]|[^A-Z]", "", x)
+
+  output$dda_length_hist <- plotly::renderPlotly({
+    psms <- dda_filtered_psms()
+    req(psms, nrow(psms) > 0)
+    compare <- input$dda_compare_mode %||% "combined"
+    if (compare == "per_file") {
+      # Multi-trace overlay: one line per file
+      pep <- .dda_clean_peptide(psms$peptide)
+      df <- data.frame(
+        filename = basename(as.character(psms$filename)),
+        length   = nchar(pep),
+        stringsAsFactors = FALSE
+      )
+      df <- df[df$length > 0 & df$length < 60, ]
+      if (nrow(df) == 0) return(plotly::plot_ly() |> plotly::layout(title = "No peptides"))
+      df$filename <- sub("\\.(mzML|raw|d)$", "", df$filename, ignore.case = TRUE)
+      counts <- as.data.frame(table(filename = df$filename, length = df$length),
+                              stringsAsFactors = FALSE)
+      counts$length <- as.integer(counts$length)
+      counts <- counts[counts$Freq > 0, ]
+      plotly::plot_ly(counts, x = ~length, y = ~Freq, color = ~filename,
+                      type = "scatter", mode = "lines+markers",
+                      hovertemplate = "%{fullData.name}<br>len=%{x}<br>n=%{y}<extra></extra>") |>
+        plotly::layout(
+          xaxis = list(title = "Peptide length (AA)", dtick = 1),
+          yaxis = list(title = "N PSMs"),
+          legend = list(orientation = "h", y = -0.2),
+          margin = list(t = 20, b = 80, l = 60, r = 20)
+        ) |>
+        plotly::config(toImageButtonOptions = list(format = "svg", scale = 2))
+    } else {
+      # Combined: single bar series with mode-signature highlighting
+      pep <- .dda_clean_peptide(psms$peptide)
+      lens <- nchar(pep)
+      lens <- lens[lens > 0 & lens < 60]
+      if (length(lens) == 0) return(plotly::plot_ly() |> plotly::layout(title = "No peptides"))
+      df <- as.data.frame(table(length = lens), stringsAsFactors = FALSE)
+      df$length <- as.integer(df$length)
+      mode <- current_dda_mode()
+      df$is_signature <- switch(mode,
+        "hla_class_i"  = df$length %in% 8:11,
+        "hla_class_ii" = df$length %in% 13:18,
+        "peptidomics"  = df$length %in% 5:25,
+        rep(FALSE, nrow(df))
+      )
+      bar_color <- ifelse(df$is_signature, "#1565c0", "#9aa6b2")
+      plotly::plot_ly(df, x = ~length, y = ~Freq, type = "bar",
+                      marker = list(color = bar_color),
+                      hovertemplate = "len=%{x}<br>n=%{y}<extra></extra>") |>
+        plotly::layout(
+          xaxis = list(title = "Peptide length (AA)", dtick = 1),
+          yaxis = list(title = "N PSMs"),
+          margin = list(t = 20, b = 50, l = 60, r = 20),
+          showlegend = FALSE
+        ) |>
+        plotly::config(toImageButtonOptions = list(format = "svg", scale = 2))
+    }
+  })
+
+  # Helper: bar-frequency renderer shared between HLA anchor + peptidomics cleavage.
+  # In per-file compare mode, each file gets its own facet (subplot row).
+  .render_pos_freq <- function(psms, positions, names_lbl, colors,
+                               min_len = 8, compare_mode = "combined") {
+    pep <- .dda_clean_peptide(psms$peptide)
+    keep <- nchar(pep) >= min_len
+    pep <- pep[keep]
+    fn  <- if (compare_mode == "per_file") basename(as.character(psms$filename[keep])) else NULL
+    if (!is.null(fn)) fn <- sub("\\.(mzML|raw|d)$", "", fn, ignore.case = TRUE)
+    if (length(pep) == 0) return(plotly::plot_ly() |> plotly::layout(title = "No peptides"))
+    extract <- function(i) {
+      if (i > 0) substr(pep, i, i) else substr(pep, nchar(pep), nchar(pep))
+    }
+    p_aas <- lapply(positions, extract)
+    all_aa <- sort(unique(unlist(p_aas)))
+    if (compare_mode == "per_file" && !is.null(fn)) {
+      # Long format: file × position × residue → freq
+      rows <- do.call(rbind, lapply(seq_along(positions), function(j) {
+        data.frame(
+          file = fn, position = names_lbl[j], residue = p_aas[[j]],
+          stringsAsFactors = FALSE
+        )
+      }))
+      counts <- aggregate(rep(1L, nrow(rows)), list(file = rows$file,
+                          position = rows$position, residue = rows$residue),
+                          sum)
+      names(counts)[4] <- "n"
+      totals <- aggregate(counts$n,
+                          list(file = counts$file, position = counts$position), sum)
+      names(totals)[3] <- "tot"
+      counts <- merge(counts, totals, by = c("file", "position"))
+      counts$pct <- 100 * counts$n / counts$tot
+      counts$facet <- paste(counts$file, counts$position, sep = " · ")
+      plotly::plot_ly(counts, x = ~residue, y = ~pct, color = ~position,
+                      colors = colors, type = "bar",
+                      hovertemplate = "%{x}: %{y:.1f}%<extra></extra>") |>
+        plotly::layout(
+          barmode = "group", xaxis = list(title = "Residue"),
+          yaxis = list(title = "Frequency (%)"),
+          legend = list(orientation = "h", y = 1.1),
+          margin = list(t = 20, b = 50, l = 60, r = 20)
+        ) |>
+        plotly::config(toImageButtonOptions = list(format = "svg", scale = 2))
+    } else {
+      plt <- plotly::plot_ly()
+      for (j in seq_along(positions)) {
+        pcts <- as.integer(table(factor(p_aas[[j]], levels = all_aa)))
+        pcts <- 100 * pcts / sum(pcts)
+        plt <- plotly::add_bars(plt, x = all_aa, y = pcts,
+                                name = names_lbl[j],
+                                marker = list(color = colors[j]),
+                                hovertemplate = sprintf("%s %%{x}: %%{y:.1f}%%<extra></extra>",
+                                                        names_lbl[j]))
+      }
+      plotly::layout(plt,
+        barmode = "group",
+        xaxis = list(title = "Residue", categoryorder = "category ascending"),
+        yaxis = list(title = "Frequency (%)"),
+        margin = list(t = 20, b = 50, l = 60, r = 20),
+        legend = list(orientation = "h", y = 1.1)
+      ) |>
+        plotly::config(toImageButtonOptions = list(format = "svg", scale = 2))
+    }
+  }
+
+  # ─── HLA anchor residues (P2 + PΩ) ──────────────────────────────────────
+  output$dda_anchor_freq <- plotly::renderPlotly({
+    psms <- dda_filtered_psms(); req(psms, nrow(psms) > 0)
+    .render_pos_freq(psms, positions = c(2, -1),
+                     names_lbl = c("P2", "PΩ"),
+                     colors = c("#1565c0", "#b16e1f"),
+                     min_len = 8,
+                     compare_mode = input$dda_compare_mode %||% "combined")
+  })
+
+  # ─── Peptidomics N-term + C-term flanks ─────────────────────────────────
+  output$dda_cleavage_freq <- plotly::renderPlotly({
+    psms <- dda_filtered_psms(); req(psms, nrow(psms) > 0)
+    .render_pos_freq(psms, positions = c(1, -1),
+                     names_lbl = c("N-term", "C-term"),
+                     colors = c("#198754", "#dc3545"),
+                     min_len = 5,
+                     compare_mode = input$dda_compare_mode %||% "combined")
+  })
+
+  # ─── Peptide × File matrix (presence + PSM counts) ──────────────────────
+  # Rows = unique stripped peptides; columns = files; cells = PSM count.
+  # Sortable, downloadable. Lets you spot peptides unique to a condition.
+  output$dda_peptide_file_matrix <- DT::renderDT({
+    psms <- dda_filtered_psms(); req(psms, nrow(psms) > 0)
+    pep_stripped <- .dda_clean_peptide(psms$peptide)
+    fn <- sub("\\.(mzML|raw|d)$", "", basename(as.character(psms$filename)),
+              ignore.case = TRUE)
+    tbl <- table(peptide = pep_stripped, file = fn)
+    mat <- as.matrix(unclass(tbl))
+    df <- data.frame(
+      peptide  = rownames(mat),
+      length   = nchar(rownames(mat)),
+      n_files  = rowSums(mat > 0),
+      total    = rowSums(mat),
+      check.names = FALSE
+    )
+    df <- cbind(df, as.data.frame(mat, check.names = FALSE))
+    df <- df[order(-df$total), ]   # most-abundant peptides first
+    DT::datatable(df,
+      rownames = FALSE, filter = "top",
+      extensions = c("Buttons", "FixedColumns", "Scroller"),
+      options = list(
+        scrollX = TRUE, scrollY = "55vh", scroller = TRUE,
+        deferRender = TRUE,
+        fixedColumns = list(leftColumns = 4),
+        dom = "Bfrtip",
+        buttons = c("copy", "csv", "excel"),
+        pageLength = 200
+      )) |>
+      DT::formatStyle(columns = colnames(mat),
+                      background = DT::styleInterval(c(0),
+                        c("transparent", "#e3f2fd")))
+  })
+
+  # ─── HF-viewable ZIP export ─────────────────────────────────────────────
+  # Bundles the current loaded DDA search into a flat .zip that renders well
+  # on a HuggingFace Space: methods.md, settings.json, sage_results.tsv,
+  # casanovo/*.mztab, diamond_hits.tsv, mode-specific summary CSVs, PROMPT.md,
+  # MANIFEST.txt. Mode comes from values$dda_loaded$mode or the queue row
+  # for the currently loaded output_dir.
+  output$dda_export_zip <- downloadHandler(
+    filename = function() {
+      mode <- isolate(values$dda_loaded$mode %||% "standard")
+      sprintf("delimp_dda_%s_%s.zip", gsub("[^a-zA-Z0-9]", "_", mode),
+              format(Sys.time(), "%Y%m%d_%H%M%S"))
+    },
+    content = function(file) {
+      output_dir <- isolate(values$dda_loaded$output_dir %||% values$dda_output_dir)
+      mode       <- isolate(values$dda_loaded$mode %||% "standard")
+      app_ver    <- isolate(values$app_version %||% "unknown")
+      if (is.null(output_dir) || !dir.exists(output_dir)) {
+        # In SSH/HPC mode the canonical artifacts live on Hive — they get
+        # downloaded into a local tempdir during the Load step. Refuse rather
+        # than build a half-empty bundle.
+        showNotification(
+          "Export requires a local output directory. Load the search first.",
+          type = "error", duration = 10)
+        stop("dda_export_zip: no local output_dir available")
+      }
+      zip_path <- generate_dda_export_zip(
+        output_dir  = output_dir,
+        mode        = mode,
+        app_version = app_ver
+      )
+      file.copy(zip_path, file, overwrite = TRUE)
+    }
+  )
+
   # Pre-flight check — verify the requested output dir actually has the
   # expected files before kicking off scp_download + parse. Refuses to load
   # search dirs where the underlying SLURM jobs failed (so users don't load
@@ -922,6 +1323,7 @@ server_dda <- function(input, output, session, values, add_to_log) {
         values$dda_output_dir    <- remote_dir
         values$dda_status        <- "loaded"
         values$dda_db_engine     <- db_engine
+        values$dda_loaded_at     <- Sys.time()
 
         setProgress(0.5, detail = "Checking for Casanovo results...")
 
@@ -1098,7 +1500,7 @@ server_dda <- function(input, output, session, values, add_to_log) {
             logs_dir <- file.path(remote_dir, "logs")
 
             blast_sbatch <- paste0(
-'#!/bin/bash
+'#!/bin/bash -l
 #SBATCH --job-name=delimp_diamond_blast
 #SBATCH --partition=high
 #SBATCH --account=', slurm_account, '
@@ -1123,7 +1525,7 @@ diamond blastp \\
   --out "', blast_out, '" \\
   --outfmt 6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore \\
   --sensitive --id 50 --max-target-seqs 5 \\
-  --threads 8
+  --threads 8 --ignore-warnings
 
 echo "[DIAMOND] Results: $(wc -l < "', blast_out, '") hits"
 echo "[DIAMOND] Done: $(date)"
@@ -1146,6 +1548,27 @@ echo "[DIAMOND] Done: $(date)"
               showNotification(
                 paste("DIAMOND BLAST submitted (job", blast_jid, ")— results will load when complete."),
                 type = "message", duration = 8)
+
+              # Push to the DDA queue so the user can see it in the table.
+              # Add as a new entry rather than mutating the parent search,
+              # since BLAST is a distinct compute step with its own job_id.
+              values$dda_jobs <- c(values$dda_jobs %||% list(), list(list(
+                job_id           = blast_jid,
+                sage_job_id      = NA_character_,
+                casanovo_job_id  = NA_character_,
+                blast_job_id     = blast_jid,
+                sage_status      = "none",
+                casanovo_status  = "none",
+                blast_status     = "running",
+                name             = sprintf("%s — DIAMOND BLAST",
+                                            basename(remote_dir)),
+                output_dir       = remote_dir,
+                status           = "running",
+                submitted_at     = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+                n_files          = NA_integer_,
+                engine           = "DIAMOND BLAST",
+                casanovo         = FALSE
+              )))
             }
           }, error = function(e) message("[DDA] Auto-BLAST submission failed: ", e$message))
         }
@@ -1183,7 +1606,7 @@ echo "[DIAMOND] Done: $(date)"
     req(values$ssh_connected)
 
     raw_dir    <- trimws(input$dda_raw_dir %||% "")
-    exp_name   <- trimws(input$dda_experiment_name %||% "dda_search")
+    exp_name   <- trimws(input$dda_experiment_name %||% "")
 
     # Resolve FASTA path from whichever source was used
     fasta_source <- input$dda_fasta_source %||% "browse"
@@ -1194,6 +1617,11 @@ echo "[DIAMOND] Done: $(date)"
     }
 
     # Validation
+    if (!nzchar(exp_name)) {
+      showNotification("Please enter an experiment name (e.g. ocelot_dda_2026_05).",
+                       type = "error", duration = 8)
+      return()
+    }
     if (!nzchar(raw_dir)) {
       showNotification("Please enter a raw file directory path.", type = "error")
       return()
@@ -1280,7 +1708,7 @@ echo "[DIAMOND] Done: $(date)"
         preset           = input$dda_preset %||% "standard",
         missed_cleavages = input$dda_missed_cleavages %||% 2,
         precursor_tol_ppm = input$dda_precursor_tol %||% 20,
-        fragment_tol_da   = input$dda_fragment_tol %||% 0.05,
+        fragment_tol_ppm  = input$dda_fragment_tol %||% 20,
         min_peaks         = 6
       )
 
@@ -1337,6 +1765,59 @@ echo "[DIAMOND] Done: $(date)"
       job_id <- trimws(sub(".*Submitted batch job\\s+", "", job_line[1]))
       message("[DDA] Sage job submitted: ", job_id)
 
+      # ─── Write search_info.md on Hive ─────────────────────────────────────
+      # Mirrors what generate_search_info() does for DIA. This is the file
+      # Discover-from-Hive parses to populate the queue table (job ID,
+      # submitted, n_files, etc.) AND the View Info modal reads later.
+      info_md <- sprintf("# DDA Search Info
+
+**Pipeline**: Sage + Casanovo (DE-LIMP DDA mode)
+**Submitted**: %s
+**App version**: DE-LIMP %s
+
+## Search Parameters
+- **Search engine**: Sage (binary: %s)
+- **Preset**: %s
+- **FASTA**: `%s`
+- **Contaminant library**: %s
+- **Enzyme**: Trypsin/P, %d missed cleavages
+- **Precursor tolerance**: ±%s ppm
+- **Fragment tolerance**: ±%s ppm
+- **Normalization**: %s
+- **Imputation**: %s
+- **Casanovo enabled**: %s
+- **Casanovo model**: %s
+
+## Files
+- **Raw files**: %d files in `%s`
+- **Output**: `%s`
+- **Sage job ID**: %s
+- **Casanovo job ID**: (pending — chained submission)
+",
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        as.character(values$app_version %||% "v3.11.0"),
+        basename(sage_bin),
+        input$dda_preset %||% "standard",
+        basename(fasta_path %||% "(unspecified)"),
+        contam_lib %||% "(none)",
+        as.integer(input$dda_missed_cleavages %||% 2),
+        as.character(input$dda_precursor_tol %||% 20),
+        as.character(input$dda_fragment_tol %||% 20),
+        as.character(input$dda_norm_method %||% "cyclicloess"),
+        as.character(input$dda_impute_method %||% "perseus"),
+        if (isTRUE(input$dda_run_casanovo)) "TRUE" else "FALSE",
+        if (isTRUE(input$dda_run_casanovo))
+          as.character(input$dda_casanovo_model %||% "casanovo_v4_2_0")
+        else "(disabled)",
+        length(raw_paths), raw_dir, output_dir, job_id)
+      tryCatch({
+        local_info <- file.path(tempdir(), "search_info.md")
+        writeLines(info_md, local_info)
+        scp_upload(ssh_cfg, local_info, file.path(output_dir, "search_info.md"))
+        unlink(local_info)
+      }, error = function(e) message("[DDA] could not write search_info.md: ",
+                                     conditionMessage(e)))
+
       # Store state — both the "active job" scalars (used by polling + status
       # UI + result loaders) AND a queue entry (persisted to disk via the
       # observer at module init, so the queue survives Shiny restarts).
@@ -1344,22 +1825,29 @@ echo "[DIAMOND] Done: $(date)"
       values$dda_output_dir <- output_dir
       values$dda_status     <- "running"
 
-      dda_name <- if (nzchar(input$dda_analysis_name %||% ""))
-                    input$dda_analysis_name
-                  else
+      # Use whichever name the user actually typed in the UI.
+      # (input ID is dda_experiment_name — was previously misnamed dda_analysis_name here.)
+      dda_name <- if (nzchar(exp_name)) exp_name else
                     sprintf("DDA_%s", format(Sys.time(), "%Y%m%d_%H%M%S"))
       values$dda_jobs <- c(values$dda_jobs %||% list(), list(list(
-        job_id        = job_id,
-        name          = dda_name,
-        output_dir    = output_dir,
-        status        = "running",
-        submitted_at  = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
-        n_files       = length(raw_paths),
-        engine        = "Sage",
-        casanovo      = isTRUE(input$dda_run_casanovo),
+        job_id           = job_id,
+        sage_job_id      = job_id,
+        casanovo_job_id  = NA_character_,  # populated when casanovo sbatch lands
+        sage_status      = "running",
+        casanovo_status  = if (isTRUE(input$dda_run_casanovo)) "pending" else "none",
+        name             = dda_name,
+        output_dir       = output_dir,
+        status           = "running",
+        submitted_at     = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+        n_files          = length(raw_paths),
+        engine           = "Sage",
+        casanovo         = isTRUE(input$dda_run_casanovo),
         casanovo_model = if (isTRUE(input$dda_run_casanovo))
                            input$dda_casanovo_model %||% NA_character_
-                         else NA_character_
+                         else NA_character_,
+        # Analysis mode drives results-page routing + ZIP export contents.
+        # Comes straight from the preset selector. New value → no edits anywhere else.
+        mode             = input$dda_preset %||% "standard"
       )))
 
       run_casanovo <- isTRUE(input$dda_run_casanovo)
@@ -1370,7 +1858,7 @@ echo "[DIAMOND] Done: $(date)"
         n_files             = length(raw_paths),
         missed_cleavages    = input$dda_missed_cleavages %||% 2,
         precursor_tol       = input$dda_precursor_tol %||% 20,
-        fragment_tol        = input$dda_fragment_tol %||% 0.05,
+        fragment_tol        = input$dda_fragment_tol %||% 20,
         normalization       = input$dda_norm_method %||% "cyclicloess",
         imputation          = input$dda_impute_method %||% "perseus",
         min_valid           = input$dda_min_valid %||% 0.5,
@@ -1395,7 +1883,7 @@ echo "[DIAMOND] Done: $(date)"
           "- **Contaminant library**: ", sp$contaminant_library, "\n",
           "- **Enzyme**: Trypsin/P, ", sp$missed_cleavages, " missed cleavages\n",
           "- **Precursor tolerance**: ±", sp$precursor_tol, " ppm\n",
-          "- **Fragment tolerance**: ±", sp$fragment_tol, " Da\n",
+          "- **Fragment tolerance**: ±", sp$fragment_tol, " ppm\n",
           "- **Casanovo enabled**: ", sp$casanovo_enabled, "\n\n",
           "## Files\n\n",
           "- **Raw files**: ", sp$n_files, " files in `", sp$raw_dir, "`\n",
@@ -1421,12 +1909,37 @@ echo "[DIAMOND] Done: $(date)"
         setProgress(0.7, detail = "Submitting Casanovo de novo...")
 
         tryCatch({
+          # Resolve env + ckpt + CLI version from the user's model pick.
+          # Casanovo v5 ships a newer depthcharge with `depthcharge.tokenizers`
+          # that the v4 env (cassonovo_env) cannot import — they MUST be paired.
+          model_id <- input$dda_casanovo_model %||% "casanovo_v4_2_0"
+          is_v5 <- grepl("^casanovo_v5", model_id, ignore.case = TRUE)
+          casanovo_env_use <- if (is_v5) {
+            "/quobyte/proteomics-grp/conda_envs/casanovo5"
+          } else {
+            casanovo_conda_env
+          }
+          casanovo_ckpt_use <- file.path(
+            "/quobyte/proteomics-grp/bioinformatics_programs/casanovo_modles",
+            paste0(model_id, ".ckpt")
+          )
+          casanovo_version_use <- if (is_v5) "v5" else "v4"
+          message("[DDA] Casanovo route: model=", model_id,
+                  " version=", casanovo_version_use,
+                  " env=", casanovo_env_use,
+                  " ckpt=", casanovo_ckpt_use)
+
+          compute_mode_use <- input$dda_casanovo_compute %||% "gpu"
+          message("[DDA] Casanovo compute_mode = ", compute_mode_use)
+
           casanovo_scripts <- generate_casanovo_sbatch(
             raw_dir          = raw_dir,
             output_dir       = output_dir,
             experiment_name  = exp_name,
-            conda_env_path   = casanovo_conda_env,
-            model_ckpt       = casanovo_model_ckpt,
+            conda_env_path   = casanovo_env_use,
+            model_ckpt       = casanovo_ckpt_use,
+            casanovo_version = casanovo_version_use,
+            compute_mode     = compute_mode_use,
             converter_script = casanovo_converter,
             n_files          = length(raw_paths),
             account          = slurm_account,
@@ -1458,9 +1971,12 @@ echo "[DIAMOND] Done: $(date)"
           remote_casanovo_sbatch <- file.path(output_dir, "casanovo_sequence.sbatch")
           scp_upload(ssh_cfg, local_casanovo_sbatch, remote_casanovo_sbatch)
 
-          # Write and upload launcher script
+          # Write and upload launcher script.
+          # Pass Sage's job_id so the convert step waits — Sage now pre-converts
+          # .raw → mzML and Casanovo reads those mzML files.
           launcher_content <- generate_casanovo_launcher(
-            remote_convert_sbatch, remote_casanovo_sbatch)
+            remote_convert_sbatch, remote_casanovo_sbatch,
+            sage_job_id = job_id)
           local_launcher <- file.path(local_tmp, "casanovo_submit.sh")
           writeLines(launcher_content, local_launcher)
           remote_launcher <- file.path(output_dir, "casanovo_submit.sh")
@@ -1493,6 +2009,114 @@ echo "[DIAMOND] Done: $(date)"
               paste("Casanovo submitted! Convert:", convert_jid,
                     "| Sequence:", casanovo_jid),
               type = "message", duration = 10)
+
+            # ── Auto-chain DIAMOND BLAST after Casanovo (afterok dependency) ──
+            # Runs against ALL Casanovo peptides (over-broad — DE-LIMP filters
+            # to "novel only" at Load time). Tiny extra compute, but means BLAST
+            # is finished by the time you click Load Results, no second wait.
+            blast_jid_chain <- tryCatch({
+              denovo_dir   <- file.path(output_dir, "denovo")
+              mztab_dir    <- file.path(output_dir, "casanovo", "mztab")
+              chain_blast_sbatch <- paste0('#!/bin/bash -l
+#SBATCH --job-name=delimp_diamond_chained
+#SBATCH --partition=high
+#SBATCH --account=', slurm_account, '
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=02:00:00
+#SBATCH --output="', output_dir, '/logs/diamond_chain_%j.out"
+#SBATCH --error="', output_dir, '/logs/diamond_chain_%j.err"
+
+set -euo pipefail
+shopt -s nullglob
+module load diamond
+
+MZTAB_DIR="', mztab_dir, '"
+OUT_DIR="', denovo_dir, '"
+SWISSPROT_DB="', swissprot_dmnd, '"
+TREMBL_DB="', trembl_dmnd, '"
+
+mkdir -p "$OUT_DIR"
+cd "$OUT_DIR"
+
+# Extract unique peptide sequences from all Casanovo .mztab files.
+# mztab PSM rows start with "PSM"; sequence is column 2 (TSV).
+echo "[DIAMOND-chain] extracting peptides from $MZTAB_DIR"
+awk -F"\t" \'$1 == "PSM" { gsub(/[^A-Z]/, "", $2); if (length($2) >= 7) print $2 }\' "$MZTAB_DIR"/*.mztab \
+  | sort -u > all_casanovo_peptides.txt
+N_PEP=$(wc -l < all_casanovo_peptides.txt)
+echo "[DIAMOND-chain] $N_PEP unique peptides"
+awk \'{ print ">" $1; print $1 }\' all_casanovo_peptides.txt > all_casanovo_peptides.fasta
+
+# ── STEP 1: SwissProt (fast — most peptides hit here) ─────────────────
+echo "[DIAMOND-chain] step 1/2: SwissProt"
+diamond blastp \\
+  -d "$SWISSPROT_DB" \\
+  -q all_casanovo_peptides.fasta \\
+  -o blast_results_swissprot.tsv \\
+  --outfmt 6 \\
+  --threads 8 \\
+  --max-target-seqs 5 \\
+  --evalue 1e-3 \\
+  --ignore-warnings
+N_SP_HITS=$(wc -l < blast_results_swissprot.tsv)
+N_SP_PEPS=$(cut -f1 blast_results_swissprot.tsv | sort -u | wc -l)
+echo "[DIAMOND-chain] SwissProt: $N_SP_HITS hits across $N_SP_PEPS peptides"
+
+# ── STEP 2: TrEMBL on peptides that DIDN’T hit SwissProt ───────────────
+# Peptides without a SwissProt hit = total set minus matched set.
+echo "[DIAMOND-chain] step 2/2: TrEMBL on SwissProt-misses"
+cut -f1 blast_results_swissprot.tsv | sort -u > swissprot_hit_peps.txt
+comm -23 all_casanovo_peptides.txt swissprot_hit_peps.txt > swissprot_miss_peps.txt
+N_MISS=$(wc -l < swissprot_miss_peps.txt)
+echo "[DIAMOND-chain] $N_MISS peptides not in SwissProt — sending to TrEMBL"
+if [ "$N_MISS" -gt 0 ]; then
+  awk \'{ print ">" $1; print $1 }\' swissprot_miss_peps.txt > trembl_query.fasta
+  diamond blastp \\
+    -d "$TREMBL_DB" \\
+    -q trembl_query.fasta \\
+    -o blast_results_trembl.tsv \\
+    --outfmt 6 \\
+    --threads 8 \\
+    --max-target-seqs 5 \\
+    --evalue 1e-3 \\
+    --ignore-warnings
+  N_TR_HITS=$(wc -l < blast_results_trembl.tsv)
+  N_TR_PEPS=$(cut -f1 blast_results_trembl.tsv | sort -u | wc -l)
+  echo "[DIAMOND-chain] TrEMBL: $N_TR_HITS hits across $N_TR_PEPS peptides"
+else
+  : > blast_results_trembl.tsv
+  N_TR_HITS=0; N_TR_PEPS=0
+fi
+
+# ── Combine into a single blast_results.tsv with a db source column ───
+# Source-tag each hit so downstream code can tell DBs apart.
+awk -v db=SwissProt \'BEGIN{OFS="\t"} { print $0, db }\' blast_results_swissprot.tsv  > blast_results.tsv
+awk -v db=TrEMBL    \'BEGIN{OFS="\t"} { print $0, db }\' blast_results_trembl.tsv    >> blast_results.tsv
+
+echo "[DIAMOND-chain] done. Combined blast_results.tsv: $(wc -l < blast_results.tsv) hits"
+echo "[DIAMOND-chain] summary: $N_SP_HITS SwissProt + $N_TR_HITS TrEMBL hits"
+')
+              local_chain <- file.path(local_tmp, "diamond_chain.sbatch")
+              writeLines(chain_blast_sbatch, local_chain)
+              remote_chain <- file.path(output_dir, "diamond_chain.sbatch")
+              scp_upload(ssh_cfg, local_chain, remote_chain)
+              chain_res <- ssh_exec(ssh_cfg,
+                paste(sbatch_path, "--dependency=afterok:", shQuote(casanovo_jid), " ",
+                       shQuote(remote_chain)),
+                timeout = 30)
+              chain_jid_line <- grep("Submitted batch job", chain_res$stdout, value = TRUE)
+              if (length(chain_jid_line)) {
+                cj <- trimws(sub(".*Submitted batch job\\s+", "", chain_jid_line[1]))
+                values$dda_blast_job_id <- cj
+                message("[DDA] DIAMOND BLAST chained: job ", cj,
+                        " (afterok:", casanovo_jid, ")")
+                cj
+              } else NA_character_
+            }, error = function(e) {
+              message("[DDA] Auto-chain BLAST failed: ", conditionMessage(e))
+              NA_character_
+            })
           } else {
             message("[DDA] Casanovo submission failed: ",
                     paste(casanovo_submit$stdout, collapse = " "))
@@ -1552,8 +2176,23 @@ echo "[DIAMOND] Done: $(date)"
     if (length(parts) < 2) return()
     state <- trimws(parts[2])
 
+    # Helper: write back per-engine status to the matching queue row so the
+    # Sage column flips "running" → "done"/"failed" (without it the queue
+    # display stays stale even after Sage finishes — observed v3.11.2/3).
+    update_queue_sage_status <- function(new_status) {
+      jobs <- isolate(values$dda_jobs %||% list())
+      idx <- which(vapply(jobs, function(j)
+                          identical(as.character(j$job_id),
+                                    as.character(job_id)),
+                          logical(1)))
+      if (length(idx) == 0) return()
+      jobs[[idx[1]]]$sage_status <- new_status
+      values$dda_jobs <- jobs
+    }
+
     if (state %in% c("COMPLETED")) {
       message("[DDA] Sage job completed: ", job_id)
+      update_queue_sage_status("done")
       values$dda_status <- "loading"
       showNotification("Sage search completed! Loading results...",
         type = "message", duration = 8)
@@ -1561,6 +2200,7 @@ echo "[DIAMOND] Done: $(date)"
       load_sage_results_from_hpc()
     } else if (state %in% c("FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED", "NODE_FAIL")) {
       message("[DDA] Sage job failed: ", job_id, " (", state, ")")
+      update_queue_sage_status("failed")
       values$dda_status <- "error"
       showNotification(
         paste("Sage search failed:", state),
@@ -1607,6 +2247,17 @@ echo "[DIAMOND] Done: $(date)"
       if (state %in% c("PENDING")) return()  # still queued
       if (state %in% c("FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED", "NODE_FAIL")) {
         message("[DDA] Casanovo job failed: ", casanovo_jid, " (", state, ")")
+        # Sync queue row before we req() ourselves out of further polling
+        jobs <- isolate(values$dda_jobs %||% list())
+        sage_id <- isolate(values$dda_job_id)
+        idx <- which(vapply(jobs, function(j)
+                            identical(as.character(j$job_id),
+                                      as.character(sage_id)),
+                            logical(1)))
+        if (length(idx) > 0) {
+          jobs[[idx[1]]]$casanovo_status <- "failed"
+          values$dda_jobs <- jobs
+        }
         values$dda_casanovo_status <- "error"
         showNotification(
           paste("Casanovo failed:", state, "- Sage results still available."),
@@ -1631,10 +2282,25 @@ echo "[DIAMOND] Done: $(date)"
     message(sprintf("[DDA] Casanovo progress: %d/%d completed, %d failed, %d pending",
       n_completed, n_total, n_failed, n_pending))
 
+    # Helper: write back per-engine status to the matching queue row, keyed
+    # on the Sage job_id (the queue row's primary key, not casanovo_jid).
+    update_queue_casanovo_status <- function(new_status) {
+      jobs <- isolate(values$dda_jobs %||% list())
+      sage_id <- isolate(values$dda_job_id)
+      idx <- which(vapply(jobs, function(j)
+                          identical(as.character(j$job_id),
+                                    as.character(sage_id)),
+                          logical(1)))
+      if (length(idx) == 0) return()
+      jobs[[idx[1]]]$casanovo_status <- new_status
+      values$dda_jobs <- jobs
+    }
+
     if (n_pending == 0) {
       # All tasks finished
       if (n_completed > 0) {
         message("[DDA] Casanovo completed: ", n_completed, "/", n_total, " tasks")
+        update_queue_casanovo_status(if (n_failed > 0) "partial" else "done")
         values$dda_casanovo_status <- "loading"
         showNotification(
           paste("Casanovo completed!", n_completed, "/", n_total, "files"),
@@ -1642,6 +2308,7 @@ echo "[DIAMOND] Done: $(date)"
         # Trigger Casanovo result loading
         load_casanovo_results_from_hpc()
       } else {
+        update_queue_casanovo_status("failed")
         values$dda_casanovo_status <- "error"
         showNotification("All Casanovo tasks failed.", type = "warning")
       }
@@ -1772,7 +2439,7 @@ echo "[DIAMOND] Done: $(date)"
           logs_dir <- file.path(values$dda_output_dir, "logs")
 
           blast_sbatch <- paste0(
-'#!/bin/bash
+'#!/bin/bash -l
 #SBATCH --job-name=delimp_diamond_blast
 #SBATCH --partition=high
 #SBATCH --account=', slurm_account, '
@@ -1794,7 +2461,7 @@ diamond blastp \\
   --db "', swissprot_dmnd, '" \\
   --out "', blast_out, '" \\
   --outfmt 6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore \\
-  --sensitive --id 50 --max-target-seqs 5 --threads 8
+  --sensitive --id 50 --max-target-seqs 5 --threads 8 --ignore-warnings
 
 echo "[DIAMOND] Hits: $(wc -l < "', blast_out, '")"
 echo "[DIAMOND] Done: $(date)"
@@ -2119,6 +2786,11 @@ echo "[DIAMOND] Done: $(date)"
   # ============================================================================
   #    Status UI
   # ============================================================================
+  # Note: output$denovo_source_badge lives in server_denovo_controls.R —
+  # see "Source engine + loaded-dataset banner" there. server_denovo_controls
+  # is initialized after server_dda in app.R, so any renderer registered
+  # here would be overwritten anyway.
+
   output$dda_job_status_ui <- renderUI({
     status <- values$dda_status %||% "idle"
 
@@ -2176,10 +2848,19 @@ echo "[DIAMOND] Done: $(date)"
 
     # ── Persistent queue table — survives Shiny restarts via ~/.delimp_dda_queue.rds ──
     jobs <- values$dda_jobs %||% list()
-    discover_btn <- actionButton("dda_discover_btn",
-      tagList(icon("magnifying-glass"), " Discover from Hive"),
-      class = "btn-outline-primary btn-sm",
-      title = "Scan Hive for past DDA / Sage searches and add them to the queue")
+    discover_btn <- tagList(
+      actionButton("dda_discover_btn",
+        tagList(icon("magnifying-glass"), " Discover from Hive"),
+        class = "btn-outline-primary btn-sm",
+        title = "Scan Hive for past DDA / Sage searches and add them to the queue"),
+      if (length(jobs) > 0)
+        actionButton("dda_clear_queue_btn",
+          tagList(icon("broom"), " Clear queue"),
+          class = "btn-outline-danger btn-sm",
+          style = "margin-left: 4px;",
+          title = "Empty the local queue (does not touch Hive results)")
+      else NULL
+    )
 
     queue_block <- if (length(jobs) > 0) {
       badge_color <- function(s) switch(s,
@@ -2191,25 +2872,47 @@ echo "[DIAMOND] Done: $(date)"
         "#6c757d")
       rows <- lapply(rev(jobs), function(j) {
         out_dir <- as.character(j$output_dir %||% "")
-        load_btn <- if (nzchar(out_dir)) {
+        action_btns <- if (nzchar(out_dir)) {
           dir_esc <- htmltools::htmlEscape(out_dir, attribute = TRUE)
           HTML(sprintf(
-            '<button class="btn btn-outline-primary btn-sm" title="Load this run into DE-LIMP" onclick="Shiny.setInputValue(\'dda_load_from_queue\', {dir: \'%s\', _ts: Date.now()}, {priority:\'event\'})"><i class="fa fa-download"></i></button>',
-            dir_esc))
+            '<div class="btn-group btn-group-sm" role="group">
+               <button class="btn btn-outline-primary" title="Load this run" onclick="Shiny.setInputValue(\'dda_load_from_queue\', {dir: \'%s\', _ts: Date.now()}, {priority:\'event\'})"><i class="fa fa-download"></i></button>
+               <button class="btn btn-outline-info" title="View search_info.md" onclick="Shiny.setInputValue(\'dda_view_info_from_queue\', {dir: \'%s\', _ts: Date.now()}, {priority:\'event\'})"><i class="fa fa-info-circle"></i></button>
+               <button class="btn btn-outline-danger" title="Remove from local queue (does not touch Hive)" onclick="Shiny.setInputValue(\'dda_delete_from_queue\', {dir: \'%s\', _ts: Date.now()}, {priority:\'event\'})"><i class="fa fa-times"></i></button>
+             </div>',
+            dir_esc, dir_esc, dir_esc))
         } else NULL
+        # Per-engine status badge: P/running/✓/✗/—
+        engine_badge <- function(s) {
+          s <- as.character(s %||% "none")
+          spec <- switch(s,
+            "done"     = list("✓",  "#27ae60", "completed"),
+            "running"  = list("…",  "#3498db", "running"),
+            "pending"  = list("P",  "#f39c12", "pending"),
+            "failed"   = list("✗",  "#c0392b", "failed"),
+            "cancelled"= list("⊘",  "#6c757d", "cancelled"),
+            "none"     = list("—",  "#dee2e6", "not run"),
+                         list(s,    "#6c757d", s))
+          tags$span(
+            style = sprintf("background:%s; color:white; padding:2px 8px; border-radius:4px; font-size: 0.78em; display:inline-block; min-width: 24px; text-align: center;",
+                            spec[[2]]),
+            title = spec[[3]],
+            spec[[1]])
+        }
         tags$tr(
           tags$td(j$name %||% "?"),
-          tags$td(tags$span(
-            style = sprintf("background:%s; color:white; padding:2px 8px; border-radius:4px; font-size: 0.78em;",
-                            badge_color(j$status %||% "?")),
-            j$status %||% "?")),
-          tags$td(as.character(j$job_id %||% "?")),
-          tags$td(if (isTRUE(j$casanovo)) "✓" else "—"),
+          tags$td(engine_badge(j$sage_status %||% j$status %||% "?")),
+          tags$td(engine_badge(j$casanovo_status %||%
+                                (if (isTRUE(j$casanovo)) "done" else "none"))),
+          tags$td(engine_badge(j$blast_status %||% "none")),
+          tags$td(tags$small(as.character(j$sage_job_id %||% j$job_id %||% "?"))),
+          tags$td(tags$small(as.character(j$casanovo_job_id %||% "—"))),
+          tags$td(tags$small(as.character(j$blast_job_id %||% "—"))),
           tags$td(j$n_files %||% "?"),
           tags$td(tags$small(j$submitted_at %||% "?")),
           tags$td(tags$small(style = "font-family: monospace;",
                               basename(out_dir))),
-          tags$td(load_btn)
+          tags$td(action_btns)
         )
       })
       div(style = "margin-top: 16px;",
@@ -2223,10 +2926,17 @@ echo "[DIAMOND] Done: $(date)"
         tags$table(class = "table table-sm",
           style = "font-size: 0.88em;",
           tags$thead(tags$tr(
-            tags$th("Name"), tags$th("Status"), tags$th("Job ID"),
-            tags$th("Casanovo"), tags$th("# Files"),
-            tags$th("Submitted"), tags$th("Output dir"),
-            tags$th("Load"))),
+            tags$th("Name"),
+            tags$th(title = "Sage database search status", "Sage"),
+            tags$th(title = "Casanovo de novo sequencing status", "Casanovo"),
+            tags$th(title = "DIAMOND BLAST status (runs on Casanovo peptides)", "BLAST"),
+            tags$th("Sage Job ID"),
+            tags$th("Casanovo Job ID"),
+            tags$th("BLAST Job ID"),
+            tags$th("# Files"),
+            tags$th("Submitted"),
+            tags$th("Output dir"),
+            tags$th("Actions"))),
           tags$tbody(rows)),
         tags$small(style = "color: #6c757d;",
           "Queue persists across app restarts at ", tags$code("~/.delimp_dda_queue.rds"))
@@ -2253,6 +2963,77 @@ echo "[DIAMOND] Done: $(date)"
   # ── Discover-from-Hive handler ──────────────────────────────────────────
   # Scans common DDA output roots on Hive for past Sage searches and adds
   # them to the queue. Matches the proteog "Discover from Hive" pattern.
+  # ── View search_info.md from a queue row ─────────────────────────────
+  observeEvent(input$dda_view_info_from_queue, {
+    payload <- input$dda_view_info_from_queue
+    if (is.null(payload) || is.null(payload$dir)) return()
+    sc <- dda_ssh_config()
+    if (is.null(sc)) {
+      showNotification("Connect to Hive first to view search info.",
+                       type = "warning", duration = 6)
+      return()
+    }
+    res <- tryCatch(
+      ssh_exec(sc, sprintf("cat %s/search_info.md 2>/dev/null",
+                            shQuote(payload$dir)),
+               login_shell = FALSE, timeout = 15),
+      error = function(e) NULL)
+    txt <- if (!is.null(res) && identical(res$status, 0L))
+             paste(res$stdout %||% character(), collapse = "\n")
+           else ""
+    if (!nzchar(txt)) {
+      txt <- sprintf("(No search_info.md found at %s. Runs submitted before DE-LIMP v3.11.0+'s search_info.md was wired up won't have one.)",
+                     payload$dir)
+    }
+    showModal(modalDialog(
+      title = tagList(icon("info-circle"), " Search Info"),
+      size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      tags$pre(style = "font-size: 0.85em; max-height: 60vh; overflow-y: auto; background: #f8f9fa; padding: 12px; border-radius: 6px;",
+               txt)
+    ))
+  })
+
+  # ── Delete a single queue entry ─────────────────────────────────────
+  observeEvent(input$dda_delete_from_queue, {
+    payload <- input$dda_delete_from_queue
+    if (is.null(payload) || is.null(payload$dir)) return()
+    jobs <- values$dda_jobs %||% list()
+    target <- as.character(payload$dir)
+    keep <- vapply(jobs, function(j) !identical(as.character(j$output_dir %||% ""), target),
+                    logical(1))
+    values$dda_jobs <- jobs[keep]
+  })
+
+  # ── Clear entire local queue (Hive results untouched) ─────────────────
+  observeEvent(input$dda_clear_queue_btn, {
+    showModal(modalDialog(
+      title = "Clear DDA queue?",
+      "This removes all entries from the local queue. The actual search results on Hive are NOT deleted.",
+      footer = tagList(modalButton("Cancel"),
+        actionButton("dda_clear_queue_confirm", "Clear queue",
+                     class = "btn-danger", icon = icon("trash")))
+    ))
+  })
+  observeEvent(input$dda_clear_queue_confirm, {
+    values$dda_jobs <- list()
+    removeModal()
+    showNotification("DDA queue cleared.", type = "default", duration = 5)
+  })
+
+  # ── Browse for raw data directory on Hive (mirrors DIA Browse) ──────
+  observeEvent(input$dda_browse_raw_btn, {
+    # Reuse the existing SSH file browser by trigger-clicking it, with
+    # a callback path set so the selection is written back to dda_raw_dir.
+    sc <- dda_ssh_config()
+    if (is.null(sc)) {
+      showNotification("Connect to Hive first (in the DIA Search tab).",
+                       type = "warning", duration = 6)
+      return()
+    }
+    values$ssh_browse_target_input <- "dda_raw_dir"
+    shinyjs::click("ssh_browse_raw_btn")
+  })
+
   # Per-row "Load" button on queued/discovered jobs: open the Load Results
   # modal pre-populated with this run's output_dir, so the user can review
   # + click Confirm to run the existing scp_download + parse pipeline
@@ -2278,12 +3059,15 @@ echo "[DIAMOND] Done: $(date)"
     }
     # Look for results.sage.tsv under typical DDA roots. Use sort -u in case
     # multiple search roots resolve to the same tree (e.g. /brettsp/ ==
-    # /$USER/), and de-dupe BOTH the input queue and the find output.
+    # /$USER/), de-dupe BOTH the input queue and the find output. Filter
+    # by mtime within the last 60 days so legacy test runs from many months
+    # ago don't auto-pollute the queue (user can manually load those via
+    # the Load Results modal if needed).
     user_root <- sprintf("/quobyte/proteomics-grp/de-limp/%s", sc$user %||% "")
     roots <- unique(c("/quobyte/proteomics-grp/de-limp/brettsp", user_root))
     roots <- roots[nzchar(roots)]
     cmd <- sprintf(
-      "find %s -maxdepth 5 -name results.sage.tsv -type f 2>/dev/null | sort -u",
+      "find %s -maxdepth 5 -name results.sage.tsv -type f -mtime -60 2>/dev/null | sort -u",
       paste(shQuote(roots), collapse = " ")
     )
     res <- tryCatch(
@@ -2325,37 +3109,112 @@ echo "[DIAMOND] Done: $(date)"
     for (p in paths) {
       output_dir <- dirname(p)
       if (output_dir %in% existing_dirs) next
-      # Look for Casanovo evidence in the same dir
+      # Compute per-engine status from disk artifacts. The results.sage.tsv
+      # presence drives Sage status (since `find` matched it, we know it
+      # exists), .mztab presence drives Casanovo status. If search_info.md
+      # mentions a Casanovo job ID but no mztabs are on disk, Casanovo is
+      # in-flight (queued/running).
       cas <- tryCatch(ssh_exec(sc,
         sprintf("ls %s/casanovo/mztab/*.mztab 2>/dev/null | head -1",
                 shQuote(output_dir)),
         login_shell = FALSE, timeout = 10),
         error = function(e) list(status = 1L, stdout = character()))
-      has_casanovo <- !is.null(cas) && identical(cas$status, 0L) &&
-                       nzchar(trimws(paste(cas$stdout %||% character(),
-                                           collapse = "")))
-      # Try to parse job_id + submitted_at from search_info.md
+      has_mztab <- !is.null(cas) && identical(cas$status, 0L) &&
+                    nzchar(trimws(paste(cas$stdout %||% character(),
+                                         collapse = "")))
+      casanovo_job_id <- NA_character_
+      info_peek <- tryCatch(ssh_exec(sc,
+        sprintf("grep -iE 'Casanovo (enabled|job ID)' %s/search_info.md 2>/dev/null",
+                shQuote(output_dir)),
+        login_shell = FALSE, timeout = 10),
+        error = function(e) NULL)
+      casanovo_announced <- FALSE
+      if (!is.null(info_peek) && identical(info_peek$status, 0L)) {
+        peek_txt <- paste(info_peek$stdout %||% character(), collapse = "\n")
+        casanovo_announced <- grepl("enabled[^\\n]*TRUE|job ID[^\\n]*[0-9]+",
+                                    peek_txt, ignore.case = TRUE)
+        cas_id <- regmatches(peek_txt, regexpr("Casanovo job ID[^0-9]+[0-9]+",
+                                                peek_txt, ignore.case = TRUE))
+        if (length(cas_id)) {
+          jd <- gsub("[^0-9]", "", cas_id)
+          if (nzchar(jd)) casanovo_job_id <- jd
+        }
+      }
+      sage_status <- "done"  # find matched results.sage.tsv → done
+      casanovo_status <- if (has_mztab) "done"
+                         else if (casanovo_announced) "pending"
+                         else "none"
+      has_casanovo <- has_mztab || casanovo_announced
+      # Parse job_id / submitted_at / n_files from search_info.md OR (when
+      # search_info.md is absent) fall back to file mtime + simple counts.
+      # Verified search_info.md field formats on Hive:
+      #   **Sage job ID**: 14532676
+      #   **Submitted**: 2026-05-27 16:41:17
+      #   **Raw files**: 3 files in /quobyte/...
+      # We use a line-based parser (more reliable than regex on the full
+      # blob — \\s inside an R character class doesn't mean whitespace).
       job_id <- NA_character_; submitted_at <- NA_character_
+      n_files <- NA_integer_
       info <- tryCatch(ssh_exec(sc,
         sprintf("cat %s/search_info.md 2>/dev/null", shQuote(output_dir)),
         login_shell = FALSE, timeout = 10),
         error = function(e) NULL)
-      if (!is.null(info) && identical(info$status, 0L)) {
-        txt <- paste(info$stdout %||% character(), collapse = "\n")
-        jid_m <- regmatches(txt, regexpr("[Jj]ob[_ ]?ID[:\\s]+([0-9]+)", txt))
-        if (length(jid_m) > 0) job_id <- gsub("[^0-9]", "", jid_m)
-        ts_m <- regmatches(txt, regexpr("[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ][0-9]{2}:[0-9]{2}:[0-9]{2}", txt))
-        if (length(ts_m) > 0) submitted_at <- ts_m
+      info_lines <- if (!is.null(info) && identical(info$status, 0L))
+                      unlist(strsplit(paste(info$stdout %||% character(),
+                                            collapse = "\n"), "\n"))
+                    else character()
+      if (length(info_lines) > 0) {
+        jid_line <- grep("Sage job ID", info_lines, value = TRUE)
+        if (length(jid_line)) {
+          jid_digits <- gsub("[^0-9]", "", jid_line[1])
+          if (nzchar(jid_digits)) job_id <- jid_digits
+        }
+        ts_line <- grep("^\\s*\\*\\*Submitted\\*\\*", info_lines, value = TRUE)
+        if (length(ts_line)) {
+          ts_m <- regmatches(ts_line[1],
+            regexpr("[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}",
+                    ts_line[1]))
+          if (length(ts_m) && nzchar(ts_m)) submitted_at <- ts_m
+        }
+        nf_line <- grep("Raw files", info_lines, value = TRUE)
+        if (length(nf_line)) {
+          nf_m <- regmatches(nf_line[1], regexpr("[0-9]+", nf_line[1]))
+          if (length(nf_m) && nzchar(nf_m))
+            n_files <- as.integer(nf_m)
+        }
+      }
+      # Fallbacks when search_info.md is missing or didn't yield values —
+      # use file system metadata on the results.sage.tsv itself.
+      if (is.na(submitted_at) || !nzchar(submitted_at)) {
+        st <- tryCatch(ssh_exec(sc,
+          sprintf("stat -c %%y %s 2>/dev/null", shQuote(p)),
+          login_shell = FALSE, timeout = 10),
+          error = function(e) NULL)
+        if (!is.null(st) && identical(st$status, 0L)) {
+          stxt <- trimws(paste(st$stdout %||% character(), collapse = "\n"))
+          # stat -c %y format: 2026-05-28 10:12:34.123456789 -0700
+          ts_m <- regmatches(stxt, regexpr("[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}", stxt))
+          if (length(ts_m) && nzchar(ts_m)) submitted_at <- ts_m
+        }
+      }
+      if (is.na(n_files) && length(info_lines) > 0) {
+        # Count lines containing .raw or .mzML in the File List section
+        n_guess <- sum(grepl("\\.raw|\\.mzML|\\.d\\b|\\.mgf", info_lines, ignore.case = TRUE))
+        if (n_guess > 0) n_files <- as.integer(n_guess)
       }
       current[[length(current) + 1L]] <- list(
-        job_id        = job_id,
-        name          = basename(output_dir),
-        output_dir    = output_dir,
-        status        = "discovered",
-        submitted_at  = submitted_at,
-        n_files       = NA_integer_,
-        engine        = "Sage",
-        casanovo      = has_casanovo
+        job_id           = job_id,         # Sage job id (back-compat)
+        sage_job_id      = job_id,
+        casanovo_job_id  = casanovo_job_id,
+        sage_status      = sage_status,
+        casanovo_status  = casanovo_status,
+        name             = basename(output_dir),
+        output_dir       = output_dir,
+        status           = "discovered",
+        submitted_at     = submitted_at,
+        n_files          = n_files,
+        engine           = "Sage",
+        casanovo         = has_casanovo
       )
       added <- added + 1L
     }

@@ -1203,6 +1203,9 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                   placeholder = "/quobyte/proteomics-grp/to-hive/mass-spec-archive/...",
                   width = "100%")
               ),
+              actionButton("dda_browse_raw_btn", NULL, icon = icon("folder-open"),
+                class = "btn-outline-primary btn-sm",
+                style = "margin-bottom: 15px;", title = "Browse Hive directories"),
               actionButton("dda_scan_files", "Scan",
                 icon = icon("search"), class = "btn-outline-primary btn-sm",
                 style = "margin-bottom: 15px;")
@@ -1288,14 +1291,21 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
             div(style = "display: flex; gap: 16px; flex-wrap: wrap;",
               div(style = "min-width: 180px;",
                 textInput("dda_experiment_name", "Experiment name",
-                  value = "dda_search", width = "100%")
+                  value = "", width = "100%",
+                  placeholder = "e.g. ocelot_dda_2026_05")
               ),
-              div(style = "min-width: 150px;",
-                selectInput("dda_preset", "Preset",
-                  choices = c("Standard" = "standard",
-                              "Phosphoproteomics" = "phospho",
-                              "TMT Labeling" = "tmt"),
-                  selected = "standard", width = "100%")
+              div(style = "min-width: 220px;",
+                selectInput("dda_preset", "Analysis mode",
+                  choices = c(
+                    "Standard tryptic"     = "standard",
+                    "Phosphoproteomics"    = "phospho",
+                    "TMT Labeling"         = "tmt",
+                    "Peptidomics (endogenous, 5–25 AA, nonspecific)" = "peptidomics",
+                    "HLA / MHC class I (8–12 AA, nonspecific)"       = "hla_class_i",
+                    "HLA / MHC class II (13–25 AA, nonspecific)"     = "hla_class_ii"
+                  ),
+                  selected = "standard", width = "100%"),
+                uiOutput("dda_preset_hint")
               )
             ),
             div(style = "display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;",
@@ -1308,8 +1318,8 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                   value = 20, min = 1, max = 100, step = 1, width = "100%")
               ),
               div(style = "min-width: 130px;",
-                numericInput("dda_fragment_tol", "Fragment tol. (Da)",
-                  value = 0.05, min = 0.01, max = 0.5, step = 0.01, width = "100%")
+                numericInput("dda_fragment_tol", "Fragment tol. (ppm)",
+                  value = 20, min = 5, max = 100, step = 5, width = "100%")
               )
             ),
             # Advanced SLURM controls (collapsed)
@@ -1394,17 +1404,20 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                 tags$small(
                   style = "color: #495057; display: block; margin-bottom: 8px;",
                   icon("info-circle"),
-                  " Casanovo v4.3 GPU-accelerated de novo sequencing. ",
+                  " GPU-accelerated de novo sequencing (model version selectable below). ",
                   "Runs in parallel with Sage on the gpu-a100 partition. ",
                   "Identifies novel peptides and validates Sage database hits."
                 ),
                 div(
                   style = "display: flex; gap: 12px; flex-wrap: wrap;",
-                  div(style = "min-width: 200px;",
-                    textInput("dda_casanovo_model", "Model checkpoint",
-                      value = "casanovo_v4_2_0",
-                      width = "100%",
-                      placeholder = "casanovo_v4_2_0"
+                  div(style = "min-width: 220px;",
+                    selectInput("dda_casanovo_model", "Model checkpoint",
+                      choices = c(
+                        "Casanovo v5.0.0 (recommended)" = "casanovo_v5_0_0",
+                        "Casanovo v4.2.0"               = "casanovo_v4_2_0"
+                      ),
+                      selected = "casanovo_v5_0_0",
+                      width = "100%"
                     )
                   ),
                   div(style = "min-width: 120px;",
@@ -1412,6 +1425,22 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                       "Min. score", value = -0.5,
                       min = -2, max = 1, step = 0.1, width = "100%"
                     )
+                  )
+                ),
+                div(
+                  style = "margin-top: 10px; padding-top: 8px; border-top: 1px dashed #d4c5f0;",
+                  radioButtons("dda_casanovo_compute", "Compute target",
+                    choices = c(
+                      "GPU (gpu-a100)" = "gpu",
+                      "CPU (high partition — fallback when GPU queue is loaded)" = "cpu"
+                    ),
+                    selected = "gpu",
+                    inline = FALSE
+                  ),
+                  uiOutput("dda_gpu_queue_hint"),
+                  actionLink("dda_refresh_gpu_queue",
+                    label = tags$span(icon("rotate"), " Refresh GPU queue"),
+                    style = "font-size: 12px;"
                   )
                 )
               )
@@ -2606,10 +2635,70 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
     ),
 
     # ==========================================================================
-    # DE NOVO dropdown — Cascadia de novo sequencing
+    # DDA workflows dropdown — De Novo, Peptidomics, HLA / MHC
+    # All ride the same Sage + Casanovo + DIAMOND backend; the mode selector
+    # on the Run Search page (input$dda_preset) controls which search params
+    # get used. The 3 workflow panels here are friendly landing pages — each
+    # explains the workflow and has a "Configure search" button that flips
+    # to the search tab with the right preset pre-loaded.
     # ==========================================================================
-    nav_menu("De Novo", icon = icon("dna"),
-      nav_panel("Results", value = "denovo_results_tab", icon = icon("dna"),
+    nav_menu("DDA workflows", icon = icon("dna"),
+      nav_panel("De Novo Search", value = "dda_workflow_denovo", icon = icon("dna"),
+        div(style = "max-width: 720px; margin: 24px auto; padding: 24px; background: #f0f7ff; border: 1px solid #b8d4f0; border-radius: 8px;",
+          tags$h4(icon("dna"), " De Novo Search",
+                  style = "color: #1565c0; margin-top: 0;"),
+          tags$p("Standard tryptic database search + Casanovo de novo sequencing + DIAMOND BLAST. Use this for protein discovery in any species — including ancient or non-model organisms where Casanovo's novel peptides + BLAST cascade are the value-add."),
+          tags$ul(
+            tags$li(tags$b("Enzyme:"), " Trypsin/P, 7–50 AA"),
+            tags$li(tags$b("Variable mods:"), " ox(M), N-term acetyl"),
+            tags$li(tags$b("Downstream:"), " species attribution, BLAST alignments, coverage maps, deamidation tracking")
+          ),
+          actionButton("dda_workflow_open_denovo",
+                       "Configure De Novo search",
+                       icon = icon("arrow-right"), class = "btn-primary")
+        )
+      ),
+      nav_panel("Peptidomics", value = "dda_workflow_peptidomics", icon = icon("seedling"),
+        div(style = "max-width: 720px; margin: 24px auto; padding: 24px; background: #f0fff5; border: 1px solid #b8e0c4; border-radius: 8px;",
+          tags$h4(icon("seedling"), " Peptidomics — endogenous peptides",
+                  style = "color: #198754; margin-top: 0;"),
+          tags$p("Nonspecific search for endogenous peptides (no enzymatic digestion). Use this for neuropeptides, milk peptides, antimicrobial peptides, or any analysis where peptides arrive in the MS already-cleaved by endogenous proteases."),
+          tags$ul(
+            tags$li(tags$b("Enzyme:"), " none (cleave_at = \"\"), 5–25 AA, 400–5000 Da"),
+            tags$li(tags$b("Variable mods:"), " ox(M), pyro-Glu (Q/E N-term), C-term amidation, N-term acetyl"),
+            tags$li(tags$b("Downstream:"), " peptide-source-protein chart, N-/C-term cleavage motifs, PTM landscape")
+          ),
+          tags$p(style = "font-size: 13px; color: #6c757d;",
+            icon("circle-info"),
+            " Nonspecific search is ~10–50× slower than tryptic. Walltime auto-bumped to 8 h."),
+          actionButton("dda_workflow_open_peptidomics",
+                       "Configure Peptidomics search",
+                       icon = icon("arrow-right"), class = "btn-success")
+        )
+      ),
+      nav_panel("HLA / MHC", value = "dda_workflow_hla", icon = icon("user-shield"),
+        div(style = "max-width: 720px; margin: 24px auto; padding: 24px; background: #fff8f0; border: 1px solid #f0d4b8; border-radius: 8px;",
+          tags$h4(icon("user-shield"), " HLA / MHC — immunopeptidomics",
+                  style = "color: #b16e1f; margin-top: 0;"),
+          tags$p("MHC class I and II peptide identification. Nonspecific search with class-specific length and charge windows. Use this for immunopeptidome studies, neoantigen discovery, or vaccine target ID."),
+          radioButtons("dda_workflow_hla_class", NULL,
+            choices = c("Class I (8–12 AA, 700–1500 Da)" = "hla_class_i",
+                        "Class II (13–25 AA, 1300–3000 Da)" = "hla_class_ii"),
+            selected = "hla_class_i", inline = TRUE),
+          tags$ul(
+            tags$li(tags$b("Enzyme:"), " none (cleave_at = \"\")"),
+            tags$li(tags$b("Variable mods:"), " ox(M), deamidation (N/Q)"),
+            tags$li(tags$b("Charge range:"), " 1–3 (z=1 dominant on TOF instruments)"),
+            tags$li(tags$b("Downstream:"), " length histogram, P2/PΩ anchor logos, source-protein analysis")
+          ),
+          actionButton("dda_workflow_open_hla",
+                       "Configure HLA search",
+                       icon = icon("arrow-right"), class = "btn-warning")
+        )
+      ),
+      # Existing combined Results panel — works for any DDA mode (mode tag
+      # in queue + values$dda_loaded$mode drives mode-specific viz).
+      nav_panel("Results", value = "denovo_results_tab", icon = icon("chart-line"),
         div(style = "overflow-y: auto; max-height: calc(100vh - 200px);",
 
           # Load Results button (prominent, at top)
@@ -2637,6 +2726,19 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
           # Source engine badge + BLAST job status
           uiOutput("denovo_source_badge"),
           uiOutput("denovo_blast_job_status"),
+
+          # HF-viewable ZIP export — bundles methods, settings, PSMs,
+          # Casanovo mztabs, BLAST hits, length distribution, and
+          # mode-specific summary CSVs (HLA anchors / peptidomics flanks).
+          conditionalPanel(
+            condition = "output.denovo_has_data",
+            div(style = "margin: 8px 0;",
+              downloadButton("dda_export_zip",
+                "Download Export ZIP (HF-viewable)",
+                icon = icon("file-zipper"),
+                class = "btn-outline-primary btn-sm")
+            )
+          ),
 
           # --- Confidence threshold slider ---
           div(style = "background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%); border: 1px solid #c5cfe8; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;",
@@ -2669,7 +2771,95 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
           ),
 
           uiOutput("dda_denovo_summary_cards"),
+
+          # Per-file filter — Sage PSMs and Casanovo mztabs are both tagged by
+          # source mzML/.d file. Picking a subset narrows every downstream
+          # panel (length hist, anchor logos, tables, etc.). Empty selection
+          # = "all files" (combined view) — the default.
+          conditionalPanel(
+            condition = "output.denovo_has_data",
+            div(style = "background: #f8f9fc; border: 1px solid #e1e5eb; border-radius: 6px; padding: 10px 12px; margin: 8px 0;",
+              div(style = "display: flex; align-items: center; gap: 12px; flex-wrap: wrap;",
+                tags$strong(icon("filter"), " Mass spec files:",
+                            style = "min-width: 140px;"),
+                div(style = "flex: 1; min-width: 280px;",
+                  selectizeInput("dda_file_filter", NULL,
+                    choices = NULL, multiple = TRUE,
+                    options = list(
+                      placeholder = "All files (combined view) — click to filter",
+                      plugins = list("remove_button"),
+                      closeAfterSelect = FALSE
+                    ),
+                    width = "100%")
+                ),
+                actionLink("dda_file_filter_all",
+                  label = tags$span(icon("rotate"), " Clear (show all)"),
+                  style = "font-size: 12px; white-space: nowrap;")
+              ),
+              div(style = "display: flex; align-items: center; gap: 12px; margin-top: 8px;",
+                tags$strong("View:", style = "min-width: 140px;"),
+                radioButtons("dda_compare_mode", NULL,
+                  choices = c(
+                    "Combined (aggregated across selected files)" = "combined",
+                    "Per-file (compare files / conditions side-by-side)" = "per_file"
+                  ),
+                  selected = "combined", inline = FALSE)
+              ),
+              uiOutput("dda_file_filter_summary")
+            )
+          ),
+
           navset_card_tab(
+            # Universal + mode-specific summary plots. Length distribution is
+            # always shown (useful for QC of any DDA mode). HLA anchor and
+            # peptidomics cleavage panels only render when the loaded search's
+            # mode tag matches — driven by output.dda_mode_is_hla / _peptidomics.
+            nav_panel("Length & Motifs",
+              div(style = "padding: 8px;",
+                tags$h6("Peptide length distribution",
+                        style = "margin-top: 0; color: #1565c0;"),
+                tags$small(style = "color: #6c757d; display: block; margin-bottom: 6px;",
+                  icon("circle-info"),
+                  " HLA class I shows a sharp peak at 9. HLA class II peaks 13–15. ",
+                  "Peptidomics is typically broad 5–25."),
+                plotly::plotlyOutput("dda_length_hist", height = "320px"),
+                # HLA-specific section
+                conditionalPanel(condition = "output.dda_mode_is_hla",
+                  tags$hr(),
+                  tags$h6("HLA anchor residue frequencies",
+                          style = "color: #b16e1f;"),
+                  tags$small(style = "color: #6c757d; display: block; margin-bottom: 6px;",
+                    icon("circle-info"),
+                    " P2 + PΩ are the dominant anchor positions for MHC-I. ",
+                    "Allele preferences fingerprint the donor's HLA type ",
+                    "(e.g. A*02:01 → L at P2 + L/V at PΩ)."),
+                  plotly::plotlyOutput("dda_anchor_freq", height = "320px")
+                ),
+                # Peptidomics-specific section
+                conditionalPanel(condition = "output.dda_mode_is_peptidomics",
+                  tags$hr(),
+                  tags$h6("Cleavage flanking residues",
+                          style = "color: #198754;"),
+                  tags$small(style = "color: #6c757d; display: block; margin-bottom: 6px;",
+                    icon("circle-info"),
+                    " N- and C-terminal residue percentages — fingerprints the ",
+                    "endogenous protease activity that produced these peptides. ",
+                    "High C-term K/R = trypsin contamination."),
+                  plotly::plotlyOutput("dda_cleavage_freq", height = "320px")
+                )
+              )
+            ),
+            nav_panel("Peptide × File matrix",
+              div(style = "padding: 8px;",
+                tags$small(style = "color: #6c757d; display: block; margin-bottom: 8px;",
+                  icon("circle-info"),
+                  " Rows = unique peptides; columns = source files; cells = PSM count. ",
+                  "Peptides with high ", tags$code("total"), " in one file but 0 in others ",
+                  "are candidate condition-specific. Sort/filter on the column toolbar; ",
+                  "use Copy/CSV/Excel to export."),
+                DT::DTOutput("dda_peptide_file_matrix")
+              )
+            ),
             nav_panel("Confirmed Peptides",
               div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
                 actionButton("denovo_confirmed_info_btn", icon("question-circle"),

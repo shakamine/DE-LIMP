@@ -12,7 +12,7 @@
 #' @param preset One of "standard", "phospho", "tmt"
 #' @param missed_cleavages Integer (default 2)
 #' @param precursor_tol_ppm Precursor mass tolerance in ppm (default 20)
-#' @param fragment_tol_da Fragment tolerance in Da (default 0.05)
+#' @param fragment_tol_ppm Fragment tolerance in ppm (default 20). Sage v0.14.7 expects ppm under quant.fragment_tol.
 #' @param min_peaks Min fragment peaks per spectrum (default 6)
 #' @return Path to written sage.json file
 generate_sage_config <- function(
@@ -22,23 +22,73 @@ generate_sage_config <- function(
   preset           = "standard",
   missed_cleavages = 2,
   precursor_tol_ppm = 20,
-  fragment_tol_da   = 0.05,
+  fragment_tol_ppm  = 20,
   min_peaks         = 6
 ) {
-  # Preset-based modification definitions
-  static_mods <- list("C" = jsonlite::unbox(57.0215))  # carbamidomethyl always fixed
-
-  # Sage variable_mods format: {"residue": [mass1, mass2, ...]}
-  variable_mods <- switch(preset,
-    "standard" = list("M" = c(15.9949), "^" = c(42.0106)),
-    "phospho"  = list("M" = c(15.9949), "S" = c(79.9663), "T" = c(79.9663), "Y" = c(79.9663), "^" = c(42.0106)),
-    "tmt"      = list("M" = c(15.9949)),
-    # default
-    list("M" = c(15.9949), "^" = c(42.0106))
+  # ──────────────────────────────────────────────────────────────────────────
+  # Preset → search-parameter table. Adding a new analysis mode = add a row.
+  # Keep keys consistent so the caller's mode dropdown maps 1:1 → preset name.
+  # ──────────────────────────────────────────────────────────────────────────
+  preset_table <- list(
+    "standard" = list(
+      cleave_at         = "KR",      restrict = "P",
+      min_len           = 7L,        max_len = 50L,
+      peptide_min_mass  = 500,       peptide_max_mass = 5000,
+      variable_mods     = list("M" = c(15.9949), "^" = c(42.0106)),
+      add_tmt_static    = FALSE
+    ),
+    "phospho" = list(
+      cleave_at         = "KR",      restrict = "P",
+      min_len           = 7L,        max_len = 50L,
+      peptide_min_mass  = 500,       peptide_max_mass = 5000,
+      variable_mods     = list("M" = c(15.9949), "S" = c(79.9663),
+                               "T" = c(79.9663), "Y" = c(79.9663),
+                               "^" = c(42.0106)),
+      add_tmt_static    = FALSE
+    ),
+    "tmt" = list(
+      cleave_at         = "KR",      restrict = "P",
+      min_len           = 7L,        max_len = 50L,
+      peptide_min_mass  = 500,       peptide_max_mass = 5000,
+      variable_mods     = list("M" = c(15.9949)),
+      add_tmt_static    = TRUE
+    ),
+    # Peptidomics: endogenous peptides (no enzymatic digestion). Nonspecific.
+    # Variable mods: oxidation, pyro-Glu (Q/E N-term), C-term amidation, N-term acetylation.
+    "peptidomics" = list(
+      cleave_at         = "",        restrict = "",            # nonspecific
+      min_len           = 5L,        max_len = 25L,
+      peptide_min_mass  = 400,       peptide_max_mass = 5000,
+      variable_mods     = list("M" = c(15.9949),
+                               "^" = c(42.0106, -17.02655, -18.01056),  # N-term: acetyl, pyroGlu(Q), pyroGlu(E)
+                               "$" = c(-0.98402)),                       # C-term: amidation
+      add_tmt_static    = FALSE
+    ),
+    # HLA class I — non-specific, 8–12 AA, charge typically +1–3 on TOF.
+    # Variable mods per BOWIE preset table: oxidation + deamidation.
+    "hla_class_i" = list(
+      cleave_at         = "",        restrict = "",
+      min_len           = 8L,        max_len = 12L,
+      peptide_min_mass  = 700,       peptide_max_mass = 1500,
+      variable_mods     = list("M" = c(15.9949),
+                               "N" = c(0.98402), "Q" = c(0.98402)),  # deamidation
+      add_tmt_static    = FALSE
+    ),
+    # HLA class II — non-specific, 13–25 AA.
+    "hla_class_ii" = list(
+      cleave_at         = "",        restrict = "",
+      min_len           = 13L,       max_len = 25L,
+      peptide_min_mass  = 1300,      peptide_max_mass = 3000,
+      variable_mods     = list("M" = c(15.9949),
+                               "N" = c(0.98402), "Q" = c(0.98402)),
+      add_tmt_static    = FALSE
+    )
   )
 
-  # TMT static mods: add TMT to n-term and K as static
-  if (preset == "tmt") {
+  ps <- preset_table[[preset]] %||% preset_table[["standard"]]
+
+  static_mods <- list("C" = jsonlite::unbox(57.0215))  # carbamidomethyl always fixed
+  if (isTRUE(ps$add_tmt_static)) {
     static_mods[["^"]] <- jsonlite::unbox(229.1629)
     static_mods[["K"]] <- jsonlite::unbox(229.1629)
   }
@@ -48,26 +98,26 @@ generate_sage_config <- function(
       bucket_size = jsonlite::unbox(32768L),
       enzyme = list(
         missed_cleavages = jsonlite::unbox(as.integer(missed_cleavages)),
-        min_len          = jsonlite::unbox(7L),
-        max_len          = jsonlite::unbox(50L),
-        cleave_at        = jsonlite::unbox("KR"),
-        restrict         = jsonlite::unbox("P")
+        min_len          = jsonlite::unbox(ps$min_len),
+        max_len          = jsonlite::unbox(ps$max_len),
+        cleave_at        = jsonlite::unbox(ps$cleave_at),
+        restrict         = jsonlite::unbox(ps$restrict)
       ),
       fragment_min_mz  = jsonlite::unbox(150.0),
       fragment_max_mz  = jsonlite::unbox(2000.0),
-      peptide_min_mass = jsonlite::unbox(500.0),
-      peptide_max_mass = jsonlite::unbox(5000.0),
+      peptide_min_mass = jsonlite::unbox(as.numeric(ps$peptide_min_mass)),
+      peptide_max_mass = jsonlite::unbox(as.numeric(ps$peptide_max_mass)),
       ion_kinds        = c("b", "y"),
       min_ion_index    = jsonlite::unbox(2L),
       static_mods      = static_mods,
-      variable_mods    = variable_mods,
+      variable_mods    = ps$variable_mods,
       max_variable_mods = jsonlite::unbox(2L),
       decoy_tag        = jsonlite::unbox("rev_"),
       generate_decoys  = jsonlite::unbox(TRUE),
       fasta            = jsonlite::unbox(fasta_path)
     ),
     precursor_tol = list(ppm = c(-precursor_tol_ppm, precursor_tol_ppm)),
-    fragment_tol  = list(ppm = c(-fragment_tol_da * 1000, fragment_tol_da * 1000)),
+    fragment_tol  = list(ppm = c(-fragment_tol_ppm, fragment_tol_ppm)),
     report_psms   = jsonlite::unbox(1L),
     min_peaks     = jsonlite::unbox(as.integer(min_peaks)),
     max_peaks     = jsonlite::unbox(150L),
@@ -448,6 +498,7 @@ generate_sage_sbatch <- function(
 #SBATCH --error="', output_dir, '/logs/sage_%j.err"
 
 set -euo pipefail
+shopt -s nullglob       # critical: empty glob → empty list, not error under pipefail
 echo "[DE-LIMP Sage] Job start: $(date)"
 echo "[DE-LIMP Sage] Node: $(hostname)"
 echo "[DE-LIMP Sage] CPUs: ', cpus, ', Memory: ', mem_gb, 'G"
@@ -456,6 +507,8 @@ SAGE_BIN="', sage_bin, '"
 CONFIG="', config_path, '"
 RAW_DIR="', raw_dir, '"
 OUTPUT_DIR="', output_dir, '"
+MZML_DIR="$OUTPUT_DIR/mzml"
+MSCONVERT_SIF="/quobyte/proteomics-grp/apptainers/pwiz-skyline-i-agree-to-the-vendor-licenses_latest.sif"
 
 # Verify Sage binary
 if [ ! -x "$SAGE_BIN" ]; then
@@ -463,31 +516,59 @@ if [ ! -x "$SAGE_BIN" ]; then
   exit 1
 fi
 
-# Collect .d directories and .raw files (Sage reads both natively)
+# Create output dirs
+mkdir -p "$OUTPUT_DIR" "$MZML_DIR"
+
+# Collect .d directories (Sage reads timsTOF natively)
 D_FILES=$(find "$RAW_DIR" -maxdepth 1 -name "*.d" -type d 2>/dev/null | sort)
-RAW_FILES=$(find "$RAW_DIR" -maxdepth 1 -name "*.raw" -type f 2>/dev/null | sort)
 N_D=$(echo "$D_FILES" | grep -c "." 2>/dev/null || true)
 N_D=${N_D:-0}
+
+# .raw files: Sage v0.14.7 CANNOT parse Thermo .raw — silently produces 0 hits.
+# Pre-convert each .raw → mzML using msconvert (--bind /quobyte:/quobyte is mandatory).
+RAW_FILES=$(find "$RAW_DIR" -maxdepth 1 -name "*.raw" -type f 2>/dev/null | sort)
 N_RAW=$(echo "$RAW_FILES" | grep -c "." 2>/dev/null || true)
 N_RAW=${N_RAW:-0}
-N_FILES=$((N_D + N_RAW))
 echo "[DE-LIMP Sage] Found $N_D .d files and $N_RAW .raw files in $RAW_DIR"
 
-if [ "$N_FILES" -eq 0 ]; then
-  echo "[ERROR] No .d or .raw files found in $RAW_DIR"
+if [ "$N_RAW" -gt 0 ]; then
+  if [ ! -f "$MSCONVERT_SIF" ]; then
+    echo "[ERROR] msconvert container missing at $MSCONVERT_SIF — cannot convert .raw"
+    exit 1
+  fi
+  echo "[DE-LIMP Sage] Pre-converting $N_RAW .raw files to mzML ..."
+  for RAW_FILE in $RAW_FILES; do
+    BASENAME=$(basename "$RAW_FILE" .raw)
+    if [ -f "$MZML_DIR/${BASENAME}.mzML" ]; then
+      echo "  [skip] $BASENAME.mzML already exists"
+      continue
+    fi
+    echo "  [conv] $RAW_FILE"
+    if ! apptainer exec --bind /quobyte:/quobyte "$MSCONVERT_SIF" wine msconvert "$RAW_FILE" --mzML --filter "peakPicking true 1-" -o "$MZML_DIR/"; then
+      echo "[ERROR] msconvert failed for $BASENAME"
+      exit 1
+    fi
+  done
+fi
+
+# Collect the converted mzML files
+MZML_FILES=$(find "$MZML_DIR" -maxdepth 1 -name "*.mzML" -type f 2>/dev/null | sort)
+N_MZML=$(echo "$MZML_FILES" | grep -c "." 2>/dev/null || true)
+N_MZML=${N_MZML:-0}
+echo "[DE-LIMP Sage] Sage will read: $N_D .d + $N_MZML mzML files"
+
+if [ "$((N_D + N_MZML))" -eq 0 ]; then
+  echo "[ERROR] No readable mass-spec files (.d or .mzML) for Sage"
   exit 1
 fi
 
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
-
-# Run Sage
+# Run Sage. CLI args override config.mzml_paths (per Sage v0.14.7 docs).
 echo "[DE-LIMP Sage] Starting search..."
 "$SAGE_BIN" \\
   --write-pin \\
   --output_directory "$OUTPUT_DIR" \\
   "$CONFIG" \\
-  $D_FILES
+  $D_FILES $MZML_FILES
 
 echo "[DE-LIMP Sage] Search complete: $(date)"
 echo "[DE-LIMP Sage] Output files:"
@@ -588,11 +669,15 @@ generate_casanovo_sbatch <- function(
   experiment_name  = "casanovo",
   conda_env_path   = "/quobyte/proteomics-grp/conda_envs/cassonovo_env",
   model_ckpt       = "/quobyte/proteomics-grp/bioinformatics_programs/casanovo_modles/casanovo_v4_2_0.ckpt",
+  casanovo_version = "v4",
+  compute_mode     = "gpu",     # "gpu" → gpu-a100 + --gres=gpu:1; "cpu" → high partition, no GPU
   converter_script = "/quobyte/proteomics-grp/de-limp/python/bruker_to_mgf.py",
   n_files          = 1,
   account          = "genome-center-grp",
   gpu_partition    = "gpu-a100",
-  gpu_qos          = "genome-center-grp-gpu-a100-qos"
+  gpu_qos          = "genome-center-grp-gpu-a100-qos",
+  cpu_partition    = "high",
+  cpu_qos          = "genome-center-grp-high-qos"
 ) {
   safe_name <- gsub("[^a-zA-Z0-9_.-]", "_", experiment_name)
   casanovo_dir <- file.path(output_dir, "casanovo")
@@ -603,7 +688,7 @@ generate_casanovo_sbatch <- function(
   # ---- Step 1: MGF conversion (CPU, no GPU needed) ----
   convert_script <- paste0(
 '#!/bin/bash
-#SBATCH --job-name=delimp_mgf_', safe_name, '
+#SBATCH --job-name=delimp_casanovo_prep_', safe_name, '
 #SBATCH --partition=high
 #SBATCH --account=', account, '
 #SBATCH --nodes=1
@@ -611,10 +696,11 @@ generate_casanovo_sbatch <- function(
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --output="', logs_dir, '/mgf_convert_%j.out"
-#SBATCH --error="', logs_dir, '/mgf_convert_%j.err"
+#SBATCH --output="', logs_dir, '/casanovo_prep_%j.out"
+#SBATCH --error="', logs_dir, '/casanovo_prep_%j.err"
 
 set -euo pipefail
+shopt -s nullglob          # critical: glob with no matches → empty list, not error
 echo "[DE-LIMP MGF] Start: $(date)"
 echo "[DE-LIMP MGF] Node: $(hostname)"
 
@@ -627,57 +713,60 @@ mkdir -p "$MGF_DIR"
 # Activate conda environment for timsrust_pyo3
 export PATH="$CONDA_ENV/bin:$PATH"
 
-# Check for existing MGF files first (may already exist from previous runs)
-EXISTING_MGF=$(ls -1 "$RAW_DIR"/*.mgf 2>/dev/null | wc -l)
+# Check for existing MGF files first (may already exist from previous runs).
+# With nullglob, "$RAW_DIR"/*.mgf expands to empty when no matches → safe.
+EXISTING_MGF=$(find "$RAW_DIR" -maxdepth 1 -name "*.mgf" -type f 2>/dev/null | wc -l)
 if [ "$EXISTING_MGF" -gt 0 ]; then
   echo "[DE-LIMP MGF] Found $EXISTING_MGF existing MGF files — copying"
   cp "$RAW_DIR"/*.mgf "$MGF_DIR/" 2>/dev/null || true
 fi
 
 # Convert .d files to MGF (timsTOF)
-N_D=$(ls -1d "$RAW_DIR"/*.d 2>/dev/null | wc -l)
+N_D=$(find "$RAW_DIR" -maxdepth 1 -name "*.d" -type d 2>/dev/null | wc -l)
 if [ "$N_D" -gt 0 ]; then
   echo "[DE-LIMP MGF] Converting $N_D .d files to MGF"
   python "', converter_script, '" "$RAW_DIR" "$MGF_DIR" --batch --min-peaks 6 -v
 fi
 
-# Convert .raw files to MGF (Thermo) via msconvert container if available
-N_RAW=$(ls -1 "$RAW_DIR"/*.raw 2>/dev/null | wc -l)
-MSCONVERT_SIF="/quobyte/proteomics-grp/apptainers/pwiz-skyline-i-agree-to-the-vendor-licenses_latest.sif"
-if [ "$N_RAW" -gt 0 ] && [ -f "$MSCONVERT_SIF" ]; then
-  echo "[DE-LIMP MGF] Converting $N_RAW .raw files via msconvert container"
-  for RAW_FILE in "$RAW_DIR"/*.raw; do
-    BASENAME=$(basename "$RAW_FILE" .raw)
-    if [ ! -f "$MGF_DIR/${BASENAME}.mgf" ]; then
-      apptainer exec "$MSCONVERT_SIF" wine msconvert "$RAW_FILE" --mgf -o "$MGF_DIR/" 2>/dev/null || \
-        echo "[DE-LIMP MGF] WARNING: msconvert failed for $BASENAME — check container"
-    fi
-  done
-elif [ "$N_RAW" -gt 0 ]; then
-  echo "[DE-LIMP MGF] WARNING: $N_RAW .raw files found but no msconvert container"
-  echo "[DE-LIMP MGF] Pre-convert .raw to .mgf and place in raw directory"
-fi
+# NOTE: .raw → mzML happens in the Sage sbatch step (single conversion, reused).
+# Casanovo v5 reads mzML directly, so we just point at $OUTPUT_DIR/mzml/ here.
+# This step assumes the Sage job has finished (launcher passes --dependency=afterok:SAGE_ID).
+MZML_DIR_FROM_SAGE="', output_dir, '/mzml"
+N_MZML=$(find "$MZML_DIR_FROM_SAGE" -maxdepth 1 -name "*.mzML" -type f 2>/dev/null | wc -l)
+echo "[DE-LIMP MGF] $N_MZML mzML files available from Sage conversion in $MZML_DIR_FROM_SAGE"
 
-# List all MGF files for the array job
-ls -1 "$MGF_DIR"/*.mgf > "', casanovo_dir, '/mgf_file_list.txt" 2>/dev/null
-N_MGF=$(wc -l < "', casanovo_dir, '/mgf_file_list.txt" 2>/dev/null || echo 0)
+# Build Casanovo input list: ALL MGFs (from .d conversion) + ALL mzMLs (from Sage)
+INPUT_LIST="', casanovo_dir, '/mgf_file_list.txt"
+{
+  find "$MGF_DIR"             -maxdepth 1 -name "*.mgf"  -type f 2>/dev/null | sort
+  find "$MZML_DIR_FROM_SAGE"  -maxdepth 1 -name "*.mzML" -type f 2>/dev/null | sort
+} > "$INPUT_LIST"
+N_MGF=$(wc -l < "$INPUT_LIST" 2>/dev/null || echo 0)
 echo "[DE-LIMP MGF] Total MGF files: $N_MGF"
 echo "[DE-LIMP MGF] Done: $(date)"
 ')
 
-  # ---- Step 2: Casanovo sequencing (GPU array job, 1 per file) ----
+  # ---- Step 2: Casanovo sequencing (GPU array job, 1 per file; CPU fallback when gpu-a100 is loaded) ----
+  is_cpu <- identical(compute_mode, "cpu")
+  cas_partition <- if (is_cpu) cpu_partition else gpu_partition
+  cas_qos       <- if (is_cpu) cpu_qos       else gpu_qos
+  cas_cpus      <- if (is_cpu) 16 else 8                       # more CPU cores when no GPU
+  cas_mem       <- if (is_cpu) "32G" else "32G"
+  cas_time      <- if (is_cpu) "08:00:00" else "01:30:00"      # CPU inference is ~10-30x slower per file
+  cas_gres_line <- if (is_cpu) "" else "#SBATCH --gres=gpu:1\n"
+
   casanovo_script <- paste0(
 '#!/bin/bash
 #SBATCH --job-name=delimp_casanovo_', safe_name, '
-#SBATCH --partition=', gpu_partition, '
+#SBATCH --partition=', cas_partition, '
 #SBATCH --account=', account, '
-#SBATCH --qos=', gpu_qos, '
+#SBATCH --qos=', cas_qos, '
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --gres=gpu:1
-#SBATCH --time=01:30:00
+#SBATCH --cpus-per-task=', cas_cpus, '
+#SBATCH --mem=', cas_mem, '
+', cas_gres_line,
+'#SBATCH --time=', cas_time, '
 #SBATCH --array=1-', n_files, '
 #SBATCH --output="', logs_dir, '/casanovo_%A_%a.out"
 #SBATCH --error="', logs_dir, '/casanovo_%A_%a.err"
@@ -685,8 +774,12 @@ echo "[DE-LIMP MGF] Done: $(date)"
 set -euo pipefail
 echo "[DE-LIMP Casanovo] Task ${SLURM_ARRAY_TASK_ID} start: $(date)"
 echo "[DE-LIMP Casanovo] Node: $(hostname)"
-echo "[DE-LIMP Casanovo] GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo unknown)"
-
+echo "[DE-LIMP Casanovo] Mode: ', compute_mode, '"
+', if (is_cpu) {
+  'export CUDA_VISIBLE_DEVICES=""\n'
+} else {
+  'echo "[DE-LIMP Casanovo] GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo unknown)"\n'
+}, '
 CONDA_ENV="', conda_env_path, '"
 MODEL="', model_ckpt, '"
 MGF_DIR="', mgf_dir, '"
@@ -697,21 +790,43 @@ mkdir -p "$MZTAB_DIR"
 # Activate conda environment
 export PATH="$CONDA_ENV/bin:$PATH"
 
-# Get the MGF file for this array task
+# Get the input peak file for this array task (MGF or mzML — both supported by Casanovo v5)
 MGF_FILE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "', casanovo_dir, '/mgf_file_list.txt")
 if [ -z "$MGF_FILE" ]; then
-  echo "[ERROR] No MGF file for task ${SLURM_ARRAY_TASK_ID}"
+  echo "[ERROR] No input file for task ${SLURM_ARRAY_TASK_ID}"
   exit 1
 fi
 
-BASENAME=$(basename "$MGF_FILE" .mgf)
+# Strip whichever extension applies — Casanovo writes "${BASENAME}_sequence.mztab"
+BASENAME=$(basename "$MGF_FILE")
+BASENAME="${BASENAME%.mgf}"
+BASENAME="${BASENAME%.mzML}"
+BASENAME="${BASENAME%.mzml}"
 OUTPUT_FILE="$MZTAB_DIR/${BASENAME}_sequence.mztab"
 
 echo "[DE-LIMP Casanovo] Processing: $MGF_FILE"
 echo "[DE-LIMP Casanovo] Output: $OUTPUT_FILE"
 
+# Casanovo v5 `--force_overwrite` is unreliable when ANY file matching the
+# output-root glob already exists (e.g. stale stubs from a prior crashed run).
+# Pre-delete any leftover artifacts for THIS basename to make the task idempotent.
+rm -f "$MZTAB_DIR/${BASENAME}_sequence."* 2>/dev/null || true
+
 # Run Casanovo de novo sequencing
-casanovo sequence --model "$MODEL" --output "$OUTPUT_FILE" "$MGF_FILE"
+', if (identical(casanovo_version, "v5")) {
+'# v5 CLI: --output_dir + --output_root (no --output)
+casanovo sequence \\
+  --model "$MODEL" \\
+  --output_dir "$MZTAB_DIR" \\
+  --output_root "${BASENAME}_sequence" \\
+  --force_overwrite \\
+  "$MGF_FILE"
+# v5 may write to ${BASENAME}_sequence.mztab inside MZTAB_DIR — verify
+ls -lh "$MZTAB_DIR/${BASENAME}_sequence"* 2>/dev/null || true'
+} else {
+'# v4 CLI: --output is the full mztab path
+casanovo sequence --model "$MODEL" --output "$OUTPUT_FILE" "$MGF_FILE"'
+}, '
 
 echo "[DE-LIMP Casanovo] Task ${SLURM_ARRAY_TASK_ID} done: $(date)"
 ')
@@ -1188,13 +1303,22 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms, db_engine = "Sage") {
 #' @param convert_sbatch_path Remote path to MGF conversion sbatch
 #' @param casanovo_sbatch_path Remote path to Casanovo sbatch
 #' @return Character string: launcher script content
-generate_casanovo_launcher <- function(convert_sbatch_path, casanovo_sbatch_path) {
+generate_casanovo_launcher <- function(convert_sbatch_path, casanovo_sbatch_path,
+                                        sage_job_id = NULL) {
+  # When sage_job_id is set, the MGF/file-list build waits for Sage's mzML
+  # conversion to finish — Casanovo needs the mzML files to exist before its
+  # array task can sed the input list.
+  convert_dep <- if (!is.null(sage_job_id) && nzchar(sage_job_id)) {
+    paste0("--dependency=afterok:", sage_job_id, " ")
+  } else {
+    ""
+  }
   paste0(
 '#!/bin/bash
 set -euo pipefail
 
-# Step 1: Submit MGF conversion
-CONVERT_OUT=$(sbatch "', convert_sbatch_path, '")
+# Step 1: Submit MGF/mzML file-list build (waits for Sage if .raw conversion needed)
+CONVERT_OUT=$(sbatch ', convert_dep, '"', convert_sbatch_path, '")
 CONVERT_ID=$(echo "$CONVERT_OUT" | grep -o "[0-9]*$" | tail -1)
 echo "CONVERT:${CONVERT_ID}"
 
@@ -1203,7 +1327,340 @@ CASANOVO_OUT=$(sbatch --dependency=afterok:${CONVERT_ID} "', casanovo_sbatch_pat
 CASANOVO_ID=$(echo "$CASANOVO_OUT" | grep -o "[0-9]*$" | tail -1)
 echo "CASANOVO:${CASANOVO_ID}"
 
-echo "MGF conversion job: ${CONVERT_ID}"
+echo "File-list build job: ${CONVERT_ID}"
 echo "Casanovo sequencing job: ${CASANOVO_ID} (depends on ${CONVERT_ID})"
 ')
+}
+
+
+#' Probe live state of a GPU partition for the Casanovo compute toggle
+#'
+#' Returns counts of pending vs running jobs + the per-node GPU allocation so the
+#' UI can recommend GPU vs CPU intelligently. Cheap (3 squeue/sinfo calls, ~5s).
+#'
+#' @param ssh_config SSH config list (host, user, key) or NULL for local
+#' @param partition  Partition name (default "gpu-a100")
+#' @param sbatch_path Optional full path to remote sbatch binary (for non-login-shell SLURM calls)
+#' @return list(success, partition, pending, running,
+#'              nodes_total, nodes_usable, gpus_total, gpus_alloc, gpus_free,
+#'              recommend = "gpu"|"cpu", reason = single-line text)
+check_casanovo_gpu_queue <- function(ssh_config, partition = "gpu-a100", sbatch_path = NULL) {
+  slurm_cmd <- function(cmd) {
+    if (!is.null(sbatch_path) && nzchar(sbatch_path)) file.path(dirname(sbatch_path), cmd) else cmd
+  }
+  run_cmd <- function(command) {
+    if (!is.null(ssh_config)) {
+      ssh_exec(ssh_config, command, login_shell = is.null(sbatch_path), timeout = 12)
+    } else if (exists("slurm_proxy_available", mode = "function") && slurm_proxy_available()) {
+      slurm_proxy_exec(command, timeout = 12)
+    } else {
+      parts <- strsplit(command, " ")[[1]]
+      stdout <- tryCatch(
+        system2(parts[1], args = parts[-1], stdout = TRUE, stderr = TRUE),
+        error = function(e) structure(e$message, status = 1L)
+      )
+      list(status = attr(stdout, "status") %||% 0L, stdout = stdout)
+    }
+  }
+
+  result <- list(
+    success = FALSE, partition = partition,
+    pending = NA_integer_, running = NA_integer_,
+    nodes_total = NA_integer_, nodes_usable = NA_integer_,
+    gpus_total = NA_integer_, gpus_alloc = NA_integer_, gpus_free = NA_integer_,
+    recommend = "gpu", reason = "Queue state unknown — defaulting to GPU."
+  )
+
+  # 1. Pending count
+  tryCatch({
+    cmd <- sprintf("%s -p %s -t PD --noheader -o %%i", slurm_cmd("squeue"), partition)
+    res <- run_cmd(cmd)
+    if (res$status == 0) {
+      lines <- trimws(res$stdout); lines <- lines[nzchar(lines)]
+      result$pending <- length(lines)
+    }
+  }, error = function(e) NULL)
+
+  # 2. Running count
+  tryCatch({
+    cmd <- sprintf("%s -p %s -t R --noheader -o %%i", slurm_cmd("squeue"), partition)
+    res <- run_cmd(cmd)
+    if (res$status == 0) {
+      lines <- trimws(res$stdout); lines <- lines[nzchar(lines)]
+      result$running <- length(lines)
+    }
+  }, error = function(e) NULL)
+
+  # 3. GPU totals + allocations per node via sinfo (Gres + GresUsed + state)
+  tryCatch({
+    cmd <- sprintf(
+      "%s -p %s -h -O \"NodeList:25,StateCompact:14,Gres:35,GresUsed:35\"",
+      slurm_cmd("sinfo"), partition
+    )
+    res <- run_cmd(cmd)
+    if (res$status == 0 && length(res$stdout) > 0) {
+      gpu_count <- function(s) {
+        # Parse "gpu:a100:N" or "gpu:N" → N; sum across multiple "gres" types
+        m <- regmatches(s, gregexpr("gpu(:[a-z0-9]+)?:[0-9]+", s))[[1]]
+        if (length(m) == 0) return(0L)
+        sum(as.integer(sub(".*:", "", m)))
+      }
+      lines <- trimws(res$stdout); lines <- lines[nzchar(lines)]
+      n_total <- 0L; n_usable <- 0L
+      g_total <- 0L; g_alloc <- 0L                # raw totals across ALL nodes
+      g_total_usable <- 0L; g_alloc_usable <- 0L  # only on nodes that accept new jobs
+      for (ln in lines) {
+        parts <- strsplit(ln, "[[:space:]]{2,}")[[1]]
+        if (length(parts) < 4) next
+        state <- tolower(parts[2])
+        gres  <- parts[3]
+        used  <- parts[4]
+        n_total <- n_total + 1L
+        gt <- gpu_count(gres); ga <- gpu_count(used)
+        g_total <- g_total + gt; g_alloc <- g_alloc + ga
+        # drain/down/maint/reserv/fail/boot → won't accept new jobs
+        if (!grepl("drain|down|maint|reserv|fail|boot", state)) {
+          n_usable <- n_usable + 1L
+          g_total_usable <- g_total_usable + gt
+          g_alloc_usable <- g_alloc_usable + ga
+        }
+      }
+      result$nodes_total <- n_total
+      result$nodes_usable <- n_usable
+      result$gpus_total <- g_total
+      result$gpus_alloc <- g_alloc
+      # "Free" reflects schedulable capacity, not raw subtraction
+      result$gpus_free  <- max(0L, g_total_usable - g_alloc_usable)
+    }
+  }, error = function(e) NULL)
+
+  result$success <- !is.na(result$pending) || !is.na(result$gpus_total)
+
+  # 4. Recommendation
+  if (result$success) {
+    pd <- result$pending %||% 0L
+    free_usable_gpus <- if (!is.na(result$nodes_usable) && result$nodes_usable == 0) {
+      0L
+    } else {
+      result$gpus_free %||% 0L
+    }
+    if (free_usable_gpus > 0 && pd <= 3) {
+      result$recommend <- "gpu"
+      result$reason <- sprintf("GPU OK — %d free of %d, only %d pending.",
+                               free_usable_gpus, result$gpus_total %||% 0L, pd)
+    } else if (pd >= 10 || (free_usable_gpus == 0 && is.finite(result$nodes_usable) && result$nodes_usable <= 1)) {
+      result$recommend <- "cpu"
+      result$reason <- sprintf("Heavy GPU queue (%d pending, %d/%d GPUs free) — CPU is faster.",
+                               pd, free_usable_gpus, result$gpus_total %||% 0L)
+    } else {
+      result$recommend <- "cpu"
+      result$reason <- sprintf("GPU contested (%d pending, %d free) — CPU is the safer pick.",
+                               pd, free_usable_gpus)
+    }
+  }
+
+  result
+}
+
+
+#' Build a mode-aware ZIP export bundle for a DDA search
+#'
+#' Designed for HuggingFace Spaces viewing — flat folder of .md / .csv / .tsv /
+#' .json / .mztab files that HF renders natively. Uses `safe_section()` so any
+#' missing artifact gets logged into MANIFEST.txt with a clear `[SKIPPED]` line
+#' rather than silently disappearing (CLAUDE.md architectural rule #4).
+#'
+#' @param output_dir Local path to the search's output directory (results files live here)
+#' @param mode Analysis mode: "standard" | "phospho" | "tmt" | "peptidomics" | "hla_class_i" | "hla_class_ii"
+#' @param app_version DE-LIMP version stamp for the export
+#' @param search_info Optional list with submission metadata (overrides what we
+#'        read from search_info.md if present)
+#' @return Path to the .zip file (in tempdir())
+generate_dda_export_zip <- function(output_dir, mode = "standard",
+                                    app_version = "unknown",
+                                    search_info = NULL) {
+  stopifnot(dir.exists(output_dir))
+  safe_mode <- gsub("[^a-zA-Z0-9_.-]", "_", mode)
+  stamp     <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  bundle_name <- sprintf("delimp_dda_%s_%s", safe_mode, stamp)
+  bundle_dir  <- file.path(tempdir(), bundle_name)
+  if (dir.exists(bundle_dir)) unlink(bundle_dir, recursive = TRUE)
+  dir.create(bundle_dir, recursive = TRUE)
+
+  manifest <- new.env(parent = emptyenv())
+  manifest$lines <- c(
+    sprintf("DE-LIMP DDA Export Bundle  (v%s)", app_version),
+    sprintf("Generated: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")),
+    sprintf("Source:    %s", output_dir),
+    sprintf("Mode:      %s", mode),
+    "",
+    "Files included:",
+    "----------------------------------------"
+  )
+
+  # ---- Common: search_info → methods.md, sage.json → settings.json ----
+  safe_section(manifest, "methods.md (search_info copy)", {
+    src <- file.path(output_dir, "search_info.md")
+    if (!file.exists(src)) stop("search_info.md not found in output_dir")
+    file.copy(src, file.path(bundle_dir, "methods.md"), overwrite = TRUE)
+  })
+
+  safe_section(manifest, "settings.json (sage config)", {
+    src <- file.path(output_dir, "sage.json")
+    if (!file.exists(src)) stop("sage.json not found in output_dir")
+    file.copy(src, file.path(bundle_dir, "settings.json"), overwrite = TRUE)
+  })
+
+  # ---- Sage results table (the main PSM TSV — needed for every mode) ----
+  safe_section(manifest, "sage_results.tsv (PSM table)", {
+    src <- file.path(output_dir, "results.sage.tsv")
+    if (!file.exists(src)) stop("results.sage.tsv not found")
+    file.copy(src, file.path(bundle_dir, "sage_results.tsv"), overwrite = TRUE)
+  })
+
+  # ---- Casanovo mztabs (optional — bundled if Casanovo ran) ----
+  safe_section(manifest, "casanovo/*.mztab", {
+    mztab_src_dir <- file.path(output_dir, "casanovo", "mztab")
+    if (!dir.exists(mztab_src_dir)) stop("no casanovo mztab dir")
+    mztab_files <- list.files(mztab_src_dir, pattern = "\\.mztab$",
+                              full.names = TRUE)
+    if (length(mztab_files) == 0) stop("no .mztab files in casanovo dir")
+    dest <- file.path(bundle_dir, "casanovo")
+    dir.create(dest, showWarnings = FALSE)
+    file.copy(mztab_files, dest)
+  })
+
+  # ---- DIAMOND BLAST hits (optional — bundled if BLAST ran) ----
+  safe_section(manifest, "diamond_hits.tsv (BLAST cascade)", {
+    src <- file.path(output_dir, "denovo", "diamond_hits.tsv")
+    if (!file.exists(src)) stop("diamond_hits.tsv not found")
+    file.copy(src, file.path(bundle_dir, "diamond_hits.tsv"), overwrite = TRUE)
+  })
+
+  # ---- Universal peptide length distribution (cheap; useful for every mode) ----
+  safe_section(manifest, "peptide_length_distribution.csv", {
+    src <- file.path(output_dir, "results.sage.tsv")
+    if (!file.exists(src)) stop("results.sage.tsv missing")
+    df <- data.table::fread(src, select = c("peptide"), nThread = 1)
+    df$length <- nchar(gsub("\\[.*?\\]|[^A-Z]", "", df$peptide))
+    out <- as.data.frame(table(length = df$length), stringsAsFactors = FALSE)
+    names(out) <- c("length", "n_psms")
+    write.csv(out, file.path(bundle_dir, "peptide_length_distribution.csv"),
+              row.names = FALSE)
+  })
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Mode-specific sections. Each mode adds its own characteristic summary CSVs
+  # alongside the universal artifacts above. Plots are deferred to the v3.11.6
+  # / v3.11.7 viz work — once those exist we can embed PNG/SVG here too.
+  # ──────────────────────────────────────────────────────────────────────────
+  if (mode %in% c("hla_class_i", "hla_class_ii")) {
+    # Anchor residue P2 + PΩ frequency table — the signature HLA fingerprint.
+    safe_section(manifest, "hla_anchor_residues.csv (P2 / PΩ frequencies)", {
+      src <- file.path(output_dir, "results.sage.tsv")
+      if (!file.exists(src)) stop("results.sage.tsv missing")
+      df <- data.table::fread(src, select = c("peptide"), nThread = 1)
+      strip <- gsub("\\[.*?\\]|[^A-Z]", "", df$peptide)
+      strip <- strip[nchar(strip) >= 8]    # ignore non-HLA-length junk
+      p2 <- substr(strip, 2, 2)
+      pomega <- substr(strip, nchar(strip), nchar(strip))
+      out <- data.frame(
+        position = rep(c("P2", "POmega"), each = length(unique(c(p2, pomega)))),
+        residue  = rep(sort(unique(c(p2, pomega))), 2)
+      )
+      out$freq <- c(
+        as.integer(table(factor(p2, levels = sort(unique(c(p2, pomega)))))),
+        as.integer(table(factor(pomega, levels = sort(unique(c(p2, pomega))))))
+      )
+      out$pct <- 100 * out$freq /
+                 ave(out$freq, out$position, FUN = sum)
+      write.csv(out, file.path(bundle_dir, "hla_anchor_residues.csv"),
+                row.names = FALSE)
+    })
+    # NOTE: anchor sequence logo (P1..PΩ) PNG/SVG is deferred to the viz pass.
+  }
+
+  if (identical(mode, "peptidomics")) {
+    # N- and C-terminal cleavage flanking residues — protease motif fingerprint.
+    safe_section(manifest, "peptidomics_cleavage_residues.csv (N/C-term flanks)", {
+      src <- file.path(output_dir, "results.sage.tsv")
+      if (!file.exists(src)) stop("results.sage.tsv missing")
+      df <- data.table::fread(src, select = c("peptide"), nThread = 1)
+      strip <- gsub("\\[.*?\\]|[^A-Z]", "", df$peptide)
+      strip <- strip[nchar(strip) >= 5]
+      nt <- substr(strip, 1, 1)
+      ct <- substr(strip, nchar(strip), nchar(strip))
+      out <- data.frame(
+        residue   = sort(unique(c(nt, ct))),
+        n_pct = as.integer(table(factor(nt, levels = sort(unique(c(nt, ct)))))) /
+                length(nt) * 100,
+        c_pct = as.integer(table(factor(ct, levels = sort(unique(c(nt, ct)))))) /
+                length(ct) * 100
+      )
+      write.csv(out, file.path(bundle_dir, "peptidomics_cleavage_residues.csv"),
+                row.names = FALSE)
+    })
+    # NOTE: source-protein contributions CSV deferred until parse_sage_results
+    # is mode-aware (needs FASTA mapping to know which peptides came from where).
+  }
+
+  # ---- PROMPT.md — AI ingestion instructions (Claude / Gemini friendly) ----
+  safe_section(manifest, "PROMPT.md (AI ingestion guide)", {
+    prompt <- c(
+      sprintf("# DE-LIMP DDA Export — %s mode", mode),
+      "",
+      sprintf("Generated by DE-LIMP v%s on %s", app_version,
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")),
+      "",
+      "## What's in this bundle",
+      "",
+      "- `methods.md` — full submission metadata (FASTA, instrument, search params, job IDs)",
+      "- `settings.json` — exact Sage v0.14.7 config that ran",
+      "- `sage_results.tsv` — all Sage PSMs (1% FDR-filtered if `results.sage.tsv`)",
+      "- `peptide_length_distribution.csv` — universal length histogram",
+      if (file.exists(file.path(bundle_dir, "hla_anchor_residues.csv")))
+        "- `hla_anchor_residues.csv` — P2 + PΩ residue frequencies (the HLA fingerprint)" else "",
+      if (file.exists(file.path(bundle_dir, "peptidomics_cleavage_residues.csv")))
+        "- `peptidomics_cleavage_residues.csv` — N-/C-terminal flanking residue percentages" else "",
+      if (dir.exists(file.path(bundle_dir, "casanovo")))
+        "- `casanovo/*.mztab` — per-file Casanovo de novo PSMs (sequences + scores)" else "",
+      if (file.exists(file.path(bundle_dir, "diamond_hits.tsv")))
+        "- `diamond_hits.tsv` — DIAMOND BLAST hits for Casanovo peptides (SwissProt → TrEMBL cascade)" else "",
+      "- `MANIFEST.txt` — what made it into the bundle, what was skipped, and why",
+      "",
+      "## Interpretation hints",
+      "",
+      switch(mode,
+        "hla_class_i" = paste(
+          "- A clean HLA class I prep shows a sharp peak at length 9 in `peptide_length_distribution.csv`.",
+          "- `hla_anchor_residues.csv` P2 and PΩ frequencies fingerprint the donor's HLA allele set —",
+          "  for example, A*02:01 prefers L at P2 and L/V at PΩ.",
+          sep = "\n"),
+        "hla_class_ii" = paste(
+          "- HLA class II peptides have a broad length distribution centered ~13-15 AA.",
+          "- Class II has weaker anchor preferences than class I; expect more uniform P2/PΩ.",
+          sep = "\n"),
+        "peptidomics"  = paste(
+          "- `peptidomics_cleavage_residues.csv` shows which proteases shaped these peptides.",
+          "- High N-term M = N-terminal Met excision incomplete; high C-term K/R = trypsin contamination.",
+          sep = "\n"),
+        ""),
+      ""
+    )
+    prompt <- prompt[nzchar(prompt)]
+    writeLines(prompt, file.path(bundle_dir, "PROMPT.md"))
+  })
+
+  # ---- Write MANIFEST ----
+  writeLines(manifest$lines, file.path(bundle_dir, "MANIFEST.txt"))
+
+  # ---- Zip ----
+  zip_path <- file.path(tempdir(), paste0(bundle_name, ".zip"))
+  if (file.exists(zip_path)) file.remove(zip_path)
+  old_wd <- setwd(dirname(bundle_dir))
+  on.exit(setwd(old_wd), add = TRUE)
+  utils::zip(zipfile = zip_path, files = basename(bundle_dir))
+
+  message(sprintf("[DDA Export] Bundle ready: %s", zip_path))
+  zip_path
 }

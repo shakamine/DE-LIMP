@@ -36,6 +36,11 @@ Thumbs.db
 *.swo
 .claude/
 
+# Agent/tooling state and Python cache (never commit)
+.omc/
+__pycache__/
+*.pyc
+
 # Outputs (regenerate from code)
 plots/
 figures/

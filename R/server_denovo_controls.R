@@ -964,23 +964,57 @@ server_denovo_controls <- function(input, output, session, values) {
       )
   })
 
-  # --- Source engine badge ---
+  # --- Source engine + loaded-dataset banner ---
+  # The engine pill ("Casanovo (DDA) vs Sage" / "Cascadia (DIA) vs DIA-NN")
+  # plus an info line that ALWAYS shows which run / output directory is
+  # currently loaded, so users don't confuse one dataset's results with
+  # another (a real problem with Discover-from-Hive surfacing many runs).
   output$denovo_source_badge <- renderUI({
     engine <- values$denovo_engine
-    if (is.null(engine)) return(NULL)
+    od <- values$dda_output_dir %||% values$denovo_loaded_from %||% NULL
+    psms <- values$dda_sage_psms %||% values$denovo_data %||% NULL
+    cas <- values$dda_casanovo_psms %||% NULL
 
-    label <- if (engine == "casanovo") "Casanovo (DDA)" else "Cascadia (DIA)"
-    ref <- if (engine == "casanovo") "Sage" else "DIA-NN"
-    color <- if (engine == "casanovo") "#6a1b9a" else "#1565c0"
-    ico <- if (engine == "casanovo") "wand-magic-sparkles" else "dna"
+    # If nothing's loaded yet, hide entirely (don't show a stale engine pill)
+    if (is.null(engine) && is.null(od) && is.null(psms)) return(NULL)
 
-    div(style = "margin-bottom: 8px;",
+    engine_pill <- if (!is.null(engine)) {
+      label <- if (engine == "casanovo") "Casanovo (DDA)" else "Cascadia (DIA)"
+      ref   <- if (engine == "casanovo") "Sage" else "DIA-NN"
+      color <- if (engine == "casanovo") "#6a1b9a" else "#1565c0"
+      ico   <- if (engine == "casanovo") "wand-magic-sparkles" else "dna"
       tags$span(
         style = paste0("display: inline-block; padding: 4px 12px; border-radius: 12px; ",
                        "background: ", color, "; color: white; font-size: 12px; font-weight: 600;"),
-        icon(ico), paste0(" De novo: ", label, " vs ", ref, " database search")
+        icon(ico), paste0(" De novo: ", label, " vs ", ref, " database search"))
+    } else NULL
+
+    n_sage <- if (!is.null(psms)) nrow(psms) else 0L
+    n_cas  <- if (!is.null(cas))  nrow(cas)  else 0L
+    db_engine <- values$dda_db_engine %||% "Sage"
+
+    loaded_panel <- if (!is.null(od)) {
+      div(class = "alert alert-info py-2 px-3 mb-2 mt-1",
+        style = "font-size: 0.9em;",
+        div(style = "display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline;",
+          div(icon("folder-open"), tags$strong(" Loaded: "),
+              basename(od)),
+          div(tags$small(style = "color: #555; font-family: monospace;", od)),
+          if (n_sage > 0) div(tags$strong(format(n_sage, big.mark = ",")),
+                              tags$small(sprintf(" %s PSMs", db_engine))),
+          if (n_cas > 0)  div(tags$strong(format(n_cas, big.mark = ",")),
+                              tags$small(" Casanovo PSMs")),
+          if (!is.null(values$dda_loaded_at))
+            div(tags$small(style = "color: #666;",
+                sprintf("loaded %s",
+                        format(values$dda_loaded_at, "%Y-%m-%d %H:%M:%S"))))
+        )
       )
-    )
+    } else NULL
+
+    div(style = "margin-bottom: 8px;",
+        engine_pill,
+        loaded_panel)
   })
 
   # --- BLAST job status badge ---
