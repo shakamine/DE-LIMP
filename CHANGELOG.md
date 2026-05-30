@@ -5,6 +5,14 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.17] — 2026-05-29
+
+### Fixed
+- **DIAMOND BLAST tab reported ~311k "novel peptides" (full unfiltered set) while the rest of the app showed the threshold-filtered count.** The tab read `values$dda_casanovo_classification$novel` directly (all ~440k PSMs). Added a `novel_thresholded()` reactive that gates the stored novel set by the confidence slider (`input$dda_denovo_score_threshold`); the BLAST summary cards and `blast_filtered()` now use it, so "Novel peptides" / "With hits" are consistent with "Above Threshold" and respond to the slider.
+
+### Changed
+- **Corrected the BLAST DB labels** — the UI said "UniProt SwissProt (572k reviewed proteins)" but the search is a two-step cascade: SwissProt first, then **TrEMBL** on the SwissProt misses. Labels now reflect both DBs (server_dda.R + ui.R).
+
 ## [3.11.16] — 2026-05-29
 
 ### Fixed

@@ -2910,7 +2910,7 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                     actionButton("denovo_blast_info_btn", icon("question-circle"),
                       title = "What is DIAMOND BLAST?", class = "btn-outline-info btn-sm"),
                     tags$small(style = "color: #6c757d;",
-                      "BLASTs novel peptides against UniProt SwissProt (572k reviewed proteins) on HPC."),
+                      "BLASTs novel peptides against UniProt SwissProt + TrEMBL (SwissProt first, then TrEMBL on misses) on HPC."),
                     div(style = "margin-left: auto;",
                       checkboxInput("dda_exclude_contaminants",
                         "Exclude contaminant proteins", value = TRUE, width = "auto")

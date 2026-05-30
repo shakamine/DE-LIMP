@@ -3506,12 +3506,23 @@ echo "[DIAMOND] Done: $(date)"
   # NOTE: we deliberately do NOT apply a keratin/name-based contaminant
   # heuristic here — for hair/feather/skin projects keratins are the SIGNAL.
   # The user opts into dropping them via the "Exclude skin & hair" mode.
+  # Novel peptides above the current confidence threshold. The stored
+  # classification is the FULL ~440k-PSM set; without gating here the DIAMOND
+  # tab reports ~311k "novel" instead of the threshold-consistent count shown
+  # everywhere else. Lowering the slider reveals more peptides (and more hits).
+  novel_thresholded <- reactive({
+    n <- values$dda_casanovo_classification$novel
+    if (is.null(n) || nrow(n) == 0) return(n)
+    thr <- input$dda_denovo_score_threshold %||% 0.9
+    if ("score" %in% names(n)) n[n$score >= thr, , drop = FALSE] else n
+  })
+
   blast_filtered <- reactive({
     blast <- blast_with_species()
-    cls <- values$dda_casanovo_classification
-    if (!is.null(cls) && !is.null(cls$novel) && nrow(cls$novel) > 0 &&
+    novel <- novel_thresholded()
+    if (!is.null(novel) && nrow(novel) > 0 &&
         !is.null(blast) && nrow(blast) > 0 && "peptide" %in% names(blast)) {
-      novel_norm <- unique(gsub("I", "L", cls$novel$seq_stripped))
+      novel_norm <- unique(gsub("I", "L", novel$seq_stripped))
       blast_norm <- gsub("I", "L", build_dda_canonical_peptide(blast$peptide))
       blast <- blast[blast_norm %in% novel_norm, ]
     }
@@ -3523,7 +3534,7 @@ echo "[DIAMOND] Done: $(date)"
     blast_all <- blast_with_species()
     blast <- blast_filtered()
     req(nrow(blast_all) > 0)
-    novel <- values$dda_casanovo_classification$novel
+    novel <- novel_thresholded()
     n_novel <- length(unique(novel$seq_stripped))
     n_with_hits <- length(unique(blast$peptide))
     n_no_hits <- n_novel - n_with_hits
@@ -4214,7 +4225,7 @@ echo "[DIAMOND] Done: $(date)"
       extensions = "Buttons",
       caption = htmltools::tags$caption(
         style = "caption-side: top; font-weight: bold; color: #1565c0;",
-        "DIAMOND BLAST hits for novel peptides against UniProt SwissProt (572k reviewed proteins)"
+        "DIAMOND BLAST hits for novel peptides against UniProt SwissProt + TrEMBL (SwissProt ~572k reviewed first, then TrEMBL on the misses)"
       )
     ) %>%
       DT::formatStyle("Category",
@@ -4874,7 +4885,7 @@ echo "[DIAMOND] Done: $(date)"
       title = tagList(icon("question-circle"), " DIAMOND BLAST Analysis"),
       size = "l", easyClose = TRUE, footer = modalButton("Close"),
       div(style = "font-size: 0.9em; line-height: 1.7;",
-        p("DIAMOND BLAST searches novel de novo peptides against UniProt SwissProt (572k reviewed proteins) ",
+        p("DIAMOND BLAST searches novel de novo peptides against UniProt SwissProt + TrEMBL (SwissProt ~572k reviewed first, then TrEMBL on the misses) ",
           "to identify the closest known homologs."),
         tags$h6("Key Visualizations"),
         tags$ul(
