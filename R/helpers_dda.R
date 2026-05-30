@@ -1292,10 +1292,12 @@ classify_dda_denovo <- function(casanovo_dt, sage_psms, db_engine = "Sage") {
       stringsAsFactors = FALSE
     )
   )
-  pep_stripped <- gsub("\\+[0-9.]+", "", pep_to_protein$peptide)
-  pep_stripped <- gsub("\\[|\\]", "", pep_stripped)
-  pep_stripped <- gsub("\\(UniMod:[0-9]+\\)", "", pep_stripped)
-  pep_to_protein$seq_norm <- gsub("I", "L", pep_stripped)
+  pep_to_protein$seq_norm <- gsub("I", "L", build_dda_canonical_peptide(pep_to_protein$peptide))
+  # Collapse to ONE protein group per seq_norm. A peptide can map to several
+  # Sage protein groups; without this the merge below is many-to-many and, once
+  # all ~440k PSMs are loaded, blows past data.table's cartesian guard
+  # ("Join results in N rows; more than nrow(x)+nrow(i)").
+  pep_to_protein <- pep_to_protein[!duplicated(pep_to_protein$seq_norm), ]
 
   confirmed <- merge(
     casanovo_dt[casanovo_dt$match_type == "confirmed", ],

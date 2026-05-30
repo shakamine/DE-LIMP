@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.15] — 2026-05-29
+
+### Fixed
+- **Load crash after the v3.11.14 all-PSM change: `Join results in N rows; more than nrow(x)+nrow(i)` (data.table cartesian guard).** In `classify_dda_denovo()` the `confirmed <- merge(casanovo, pep_to_protein, by="seq_norm")` was many-to-many: a peptide maps to several Sage protein groups, so once all ~440k PSMs were loaded both sides had duplicate `seq_norm` keys and the join exploded. Fixed by collapsing `pep_to_protein` to one protein group per `seq_norm` (`!duplicated`), making it a many-to-one join. Also switched the Sage peptide stripping here to the canonical `build_dda_canonical_peptide()` for consistency.
+
 ## [3.11.14] — 2026-05-29
 
 ### Fixed
