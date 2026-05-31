@@ -1501,6 +1501,31 @@ server_dda <- function(input, output, session, values, add_to_log) {
           message("[DDA Load] BLAST load error: ", e$message)
         })
 
+        # Load the LCA species-attribution table if present (nr + LCA pipeline).
+        # Prefers the relaxed-evalue (*_e1) table when both exist.
+        tryCatch({
+          lca_local <- file.path(local_tmp, "peptide_lca.tsv")
+          lca_present <- FALSE
+          if (is.null(ssh_cfg)) {
+            cand <- list.files(local_tmp, pattern = "_peptide_lca\\.tsv$", full.names = TRUE)
+            if (length(cand) > 0) { lca_local <- tail(sort(cand), 1); lca_present <- TRUE }
+          } else {
+            found <- ssh_exec(ssh_cfg, paste0(
+              "ls -1 ", shQuote(file.path(remote_dir, "denovo")),
+              "/*_peptide_lca.tsv 2>/dev/null | sort | tail -1"), timeout = 10)
+            remote_lca <- trimws(paste(found$stdout, collapse = ""))
+            if (nzchar(remote_lca)) {
+              scp_download(ssh_cfg, remote_lca, lca_local)
+              lca_present <- file.exists(lca_local) && file.info(lca_local)$size > 50
+            }
+          }
+          if (lca_present) {
+            lca_df <- data.table::fread(lca_local, sep = "\t", header = TRUE)
+            values$dda_lca <- as.data.frame(lca_df)
+            message("[DDA Load] Loaded LCA species table: ", nrow(lca_df), " peptides")
+          }
+        }, error = function(e) message("[DDA Load] LCA load error: ", e$message))
+
         # Only submit new BLAST if no results loaded AND we have novel peptides
         # AND we have an SSH connection (ZIP-only mode can't submit jobs).
         if (!blast_loaded &&
@@ -3521,6 +3546,58 @@ echo "[DIAMOND] Done: $(date)"
       blast <- blast[blast_norm %in% novel_norm, ]
     }
     dda_apply_protein_filter(blast, input$dda_protein_family_filter %||% "all")
+  })
+
+  # --- Species (LCA) panel: host/microbiome/conserved from the nr LCA table ---
+  output$denovo_lca_category <- plotly::renderPlotly({
+    lca <- values$dda_lca
+    req(lca, nrow(lca) > 0, "category" %in% names(lca))
+    tab <- as.data.frame(table(lca$category), stringsAsFactors = FALSE)
+    names(tab) <- c("category", "n")
+    tab <- tab[order(tab$n), ]
+    plotly::plot_ly(tab, x = ~n, y = ~factor(category, levels = category),
+                    type = "bar", orientation = "h",
+                    marker = list(color = "#43a047")) %>%
+      plotly::layout(
+        title = list(text = paste0("Peptides by category (n=", nrow(lca), ")"), font = list(size = 13)),
+        xaxis = list(title = "peptides"), yaxis = list(title = ""), margin = list(l = 130))
+  })
+
+  output$denovo_lca_top_species <- plotly::renderPlotly({
+    lca <- values$dda_lca
+    req(lca, nrow(lca) > 0, "lca_name" %in% names(lca))
+    d <- lca[lca$category %in% "host", , drop = FALSE]
+    req(nrow(d) > 0)
+    cnt <- sort(table(d$lca_name), decreasing = TRUE)
+    cnt <- cnt[seq_len(min(15, length(cnt)))]
+    tab <- data.frame(taxon = names(cnt), n = as.integer(cnt), stringsAsFactors = FALSE)
+    tab <- tab[order(tab$n), ]
+    plotly::plot_ly(tab, x = ~n, y = ~factor(taxon, levels = taxon),
+                    type = "bar", orientation = "h",
+                    marker = list(color = "#1565c0")) %>%
+      plotly::layout(
+        title = list(text = "Top host taxa (LCA)", font = list(size = 13)),
+        xaxis = list(title = "peptides"), yaxis = list(title = ""), margin = list(l = 170))
+  })
+
+  output$denovo_lca_table <- DT::renderDT({
+    lca <- values$dda_lca
+    req(lca, nrow(lca) > 0)
+    ord <- if ("top_pident" %in% names(lca)) order(-lca$top_pident) else seq_len(nrow(lca))
+    DT::datatable(lca[ord, , drop = FALSE], rownames = FALSE, filter = "top",
+                  options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  observeEvent(input$denovo_lca_info_btn, {
+    showModal(modalDialog(
+      title = tagList(icon("question-circle"), " LCA species attribution"),
+      tags$p("Each de novo peptide's nr BLAST hits are mapped to NCBI taxa; the lowest common ancestor (LCA) of the top hits is the most specific taxon consistent with all of them."),
+      tags$ul(
+        tags$li(tags$b("Diagnostic"), " — LCA resolves to species/genus (e.g. Panthera onca, Leopardus): real species signal."),
+        tags$li(tags$b("Conserved"), " — LCA is family or higher (e.g. Felidae, Eutheria): peptide shared across many taxa, not species-diagnostic."),
+        tags$li(tags$b("Microbiome"), " — LCA falls in Bacteria / Archaea / Viruses.")),
+      tags$p("For a non-model organism not in nr (e.g. ocelot), peptides correctly converge on the family (Felidae) and nearest relatives rather than over-committing to one species."),
+      easyClose = TRUE, size = "l", footer = modalButton("Close")))
   })
 
   # --- Summary cards ---

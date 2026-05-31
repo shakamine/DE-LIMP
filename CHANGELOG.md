@@ -5,6 +5,16 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.19] — 2026-05-31
+
+### Added
+- **LCA species-attribution panel ("Species (LCA)") in the De Novo views.** Wires the taxonomy/LCA layer into the app: loads the per-peptide LCA table (`*_peptide_lca.tsv`) on DDA load (prefers the relaxed-evalue table), and renders host/microbiome/conserved category breakdown, top host taxa (diagnostic species/genus), and a filterable per-peptide LCA table (taxid, name, rank, category). bslib-safe (plotly + DT only).
+- **`scripts/lca_attribute.py`** — computes per-peptide LCA from a DIAMOND nr search's `staxids` + NCBI taxonomy. For each peptide: LCA over the top-10%-bitscore hits → host (Metazoa) / microbiome (Bacteria/Archaea/Viruses) / conserved, with diagnostic (species/genus) vs conserved (family+) classification. Recovers real ranks from the pristine `nodes.dmp.preDmnd` (the diamond DB has ranks neutralized to "no rank" — see gotcha). data.table-equivalent logic; the heavy hit→taxonomy join is isolated for a future DuckDB swap if the cross-organism scale grows.
+
+### Notes
+- **NCBI nr + taxonomy pipeline built** (707M seqs, taxonomy-enabled). nr search of the ocelot de novo peptides: 31 min, taxids on 54k hits / 847 taxa. LCA verdict: unambiguously **felid** — Felidae (352), Feliformia (135), Panthera onca (112, top diagnostic), Leopardus geoffroyi (genus-mate of ocelot); conserved peptides correctly parked at Eutheria/Boreoeutheria clade level. Validates the de-novo → nr-BLAST → LCA wildlife-forensics workflow end to end.
+- **GOTCHA — diamond 2.1.7 + current NCBI taxonomy:** `diamond makedb --taxonmap` fails with `Invalid taxonomic rank: domain` / `cellular root` (its rank enum predates NCBI's new top-level ranks). Fix: set ALL `nodes.dmp` ranks to "no rank" before makedb (the LCA uses tree topology, not rank labels; recover real ranks downstream from the saved original). Cost us two failed 3h builds before the bulletproof all-"no rank" patch.
+
 ## [3.11.18] — 2026-05-29
 
 ### Changed
