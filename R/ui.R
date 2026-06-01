@@ -2830,6 +2830,7 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
           ),
 
           navset_card_tab(
+            selected = "Master Table",
             # Universal + mode-specific summary plots. Length distribution is
             # always shown (useful for QC of any DDA mode). HLA anchor and
             # peptidomics cleavage panels only render when the loaded search's
@@ -3003,16 +3004,6 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                 plotlyOutput("dda_denovo_mod_bar", height = "350px")
               )
             ),
-            nav_panel("GO/Functional",
-              div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
-                div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
-                  actionButton("denovo_go_info_btn", icon("question-circle"),
-                    title = "What is GO/Functional annotation?", class = "btn-outline-info btn-sm")
-                ),
-                uiOutput("dda_denovo_go_summary"),
-                plotlyOutput("dda_denovo_go_bar", height = "400px"),
-                DT::DTOutput("dda_denovo_go_table")
-              )),
             nav_panel("Disagreements",
               div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
                 div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
@@ -3070,37 +3061,6 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                 plotlyOutput("denovo_fdr_curve", height = "400px"),
                 plotlyOutput("denovo_fdr_hits", height = "300px")
               )),
-            nav_panel("Cross-Species", icon = icon("globe"),
-              div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
-                div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
-                  actionButton("denovo_crossspecies_info_btn", icon("question-circle"),
-                    title = "What is Cross-Species comparison?", class = "btn-outline-info btn-sm")
-                ),
-                div(style = "background: #f3e5f5; padding: 12px; border-radius: 8px; margin-bottom: 12px;",
-                  tags$p(style = "margin: 0; color: #6a1b9a; font-size: 13px;",
-                    icon("globe"),
-                    " Cross-species comparison of de novo peptides. Requires BLAST results ",
-                    "from multiple samples (e.g., feather samples from different bird species)."
-                  )
-                ),
-                div(class = "row", style = "margin-bottom: 12px;",
-                  div(class = "col-md-4",
-                    selectInput("denovo_venn_sample1", "Sample 1:", choices = NULL, width = "100%")
-                  ),
-                  div(class = "col-md-4",
-                    selectInput("denovo_venn_sample2", "Sample 2:", choices = NULL, width = "100%")
-                  )
-                ),
-                div(class = "row",
-                  div(class = "col-md-5",
-                    plotlyOutput("denovo_species_venn", height = "400px")),
-                  div(class = "col-md-7",
-                    plotlyOutput("denovo_species_heatmap", height = "400px"))
-                ),
-                tags$h5(icon("table"), " Per-Protein Cross-Sample Comparison",
-                  style = "margin-top: 16px;"),
-                DT::DTOutput("denovo_protein_comparison")
-              )),
             nav_panel("Species (LCA)", icon = icon("dna"),
               div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
                 div(style = "display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;",
@@ -3135,41 +3095,6 @@ build_ui <- function(is_hf_space, search_enabled = FALSE,
                   downloadButton("dda_master_download", "Export master table (CSV)",
                                  class = "btn-outline-success btn-sm")),
                 DT::DTOutput("denovo_master_table")
-              )),
-            nav_panel("Protein Families", icon = icon("sitemap"),
-              div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
-                div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
-                  actionButton("denovo_families_info_btn", icon("question-circle"),
-                    title = "What are Protein Families?", class = "btn-outline-info btn-sm")
-                ),
-                div(style = "background: #e8f5e9; padding: 12px; border-radius: 8px; margin-bottom: 12px;",
-                  tags$p(style = "margin: 0; color: #2e7d32; font-size: 13px;",
-                    icon("sitemap"),
-                    " Protein family classification of BLAST hits. Groups proteins into ",
-                    "biological families (keratins, collagens, histones, etc.) for interpretation."
-                  )
-                ),
-                plotlyOutput("denovo_family_bar", height = "400px"),
-                plotlyOutput("denovo_family_treemap", height = "500px")
-              )),
-            nav_panel("Sequence Coverage", icon = icon("ruler-horizontal"),
-              div(style = "overflow-y: auto; max-height: calc(100vh - 250px);",
-                div(style = "display: flex; justify-content: flex-end; margin-bottom: 8px;",
-                  actionButton("denovo_coverage_info_btn", icon("question-circle"),
-                    title = "What is Sequence Coverage?", class = "btn-outline-info btn-sm")
-                ),
-                div(style = "background: #e0f2f1; padding: 12px; border-radius: 8px; margin-bottom: 12px;",
-                  tags$p(style = "margin: 0; color: #00695c; font-size: 13px;",
-                    icon("ruler-horizontal"),
-                    " Protein sequence coverage maps for top 20 proteins by peptide count. ",
-                    "Green = confirmed (100% identity), Orange = near-match (90-99%), ",
-                    "Red = distant (<90%)."
-                  )
-                ),
-                plotlyOutput("denovo_coverage_plot", height = "600px"),
-                tags$h5(icon("list"), " Peptide-Protein Mapping Details",
-                  style = "margin-top: 16px;"),
-                DT::DTOutput("denovo_coverage_detail")
               ))
           )
         )

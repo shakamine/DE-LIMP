@@ -5,6 +5,11 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.23] — 2026-06-01
+
+### Changed
+- **De novo UI simplified for biologists.** The DDA workflows section now lands on the **Master Table** (`selected`), and four tabs that were redundant or broken on NCBI nr data were retired from the UI: **GO/Functional** (no GO terms from nr), **Cross-Species** (superseded by Species (LCA)), **Protein Families** (the "XP 7775" accession-prefix treemap), and **Sequence Coverage** (the mangled "S14236" labels). 16 sub-tabs → 12. Their server renderers remain on disk and all data stays in exports — nothing was deleted, only hidden.
+
 ## [3.11.22] — 2026-06-01
 
 ### Added
