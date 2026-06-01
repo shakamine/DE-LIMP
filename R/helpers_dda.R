@@ -1199,12 +1199,19 @@ parse_casanovo_mztab <- function(mztab_paths, score_threshold = -Inf) {
 
     df <- as.data.frame(psm_data, stringsAsFactors = FALSE)
 
+    # Spectrum scan number from spectra_ref ("ms_run[1]:...scan=N"). This is the
+    # real scan that aligns with Sage's scannr ("...scan=N") — psm_id is only a
+    # row index and must NOT be used to match spectra (the Disagreements bug).
+    sr <- if ("spectra_ref" %in% names(df)) df$spectra_ref else rep(NA_character_, nrow(df))
+    scan_vec <- suppressWarnings(as.integer(sub(".*scan=([0-9]+).*", "\\1", sr)))
+
     # Extract key columns (column names from mzTab spec)
     # sequence, PSM_ID, search_engine_score[1], charge, exp_mass_to_charge,
     # calc_mass_to_charge, opt_ms_run[1]_aa_scores
     out <- data.frame(
       sequence     = df$sequence,
       psm_id       = as.integer(df$PSM_ID),
+      scan         = scan_vec,
       score        = as.numeric(df[["search_engine_score[1]"]]),
       charge       = as.integer(df$charge),
       exp_mz       = as.numeric(df$exp_mass_to_charge),
@@ -1234,9 +1241,9 @@ parse_casanovo_mztab <- function(mztab_paths, score_threshold = -Inf) {
   if (is.null(combined) || nrow(combined) == 0) {
     message("[Casanovo] No PSMs parsed from any file")
     return(data.table::data.table(
-      sequence = character(0), psm_id = integer(0), score = numeric(0),
-      charge = integer(0), exp_mz = numeric(0), calc_mz = numeric(0),
-      source_file = character(0), aa_scores = character(0),
+      sequence = character(0), psm_id = integer(0), scan = integer(0),
+      score = numeric(0), charge = integer(0), exp_mz = numeric(0),
+      calc_mz = numeric(0), source_file = character(0), aa_scores = character(0),
       seq_stripped = character(0), seq_norm = character(0),
       mean_aa_score = numeric(0)
     ))

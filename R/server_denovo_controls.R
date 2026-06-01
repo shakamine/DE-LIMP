@@ -788,11 +788,15 @@ server_denovo_controls <- function(input, output, session, values) {
     #   scannr, filename, peptide, charge, hyperscore, spectrum_q, protein_q, proteins, ...
     # Casanovo mzTab columns (parsed): psm_id, source_file, sequence, score, charge, ...
 
-    # Normalize sage filenames for matching
-    sage_fn <- gsub("\\.(d|mzML|mgf)$", "", basename(sage_psms$filename))
-    sage_key <- paste0(sage_fn, ":", sage_psms$scannr)
+    # Match on (run, scan). Both tools store the scan as "...scan=N": Sage in
+    # `scannr`, Casanovo in `spectra_ref` (parsed to the `scan` column). psm_id
+    # is a row index and must NOT be used here (the historical 0-match bug).
+    sage_fn   <- gsub("\\.(d|mzML|mgf)$", "", basename(sage_psms$filename))
+    sage_scan <- sub(".*scan=([0-9]+).*", "\\1", as.character(sage_psms$scannr))
+    sage_key  <- paste0(sage_fn, ":", sage_scan)
 
-    cas_key <- paste0(cas_psms$source_file, ":", cas_psms$psm_id)
+    cas_scan <- if ("scan" %in% names(cas_psms)) cas_psms$scan else cas_psms$psm_id
+    cas_key  <- paste0(cas_psms$source_file, ":", cas_scan)
 
     # Find spectra present in BOTH tools
     shared_keys <- intersect(cas_key, sage_key)
