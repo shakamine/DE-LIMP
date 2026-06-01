@@ -1856,10 +1856,21 @@ generate_dda_export_zip <- function(output_dir, mode = "standard",
   })
 
   # ---- DIAMOND BLAST hits (optional — bundled if BLAST ran) ----
-  safe_section(manifest, "diamond_hits.tsv (BLAST cascade)", {
-    src <- file.path(output_dir, "denovo", "diamond_hits.tsv")
-    if (!file.exists(src)) stop("diamond_hits.tsv not found")
+  safe_section(manifest, "diamond_hits.tsv (nr / UniProt BLAST)", {
+    cand <- c(file.path(output_dir, "denovo", "blast_results.tsv"),
+              file.path(output_dir, "denovo", "diamond_hits.tsv"))
+    src <- cand[file.exists(cand)][1]
+    if (is.na(src)) stop("no BLAST results (denovo/blast_results.tsv) found")
     file.copy(src, file.path(bundle_dir, "diamond_hits.tsv"), overwrite = TRUE)
+  })
+
+  # ---- nr LCA species attribution (per-peptide) ----
+  safe_section(manifest, "peptide_lca.tsv (nr LCA species attribution)", {
+    cand <- list.files(file.path(output_dir, "denovo"),
+                       pattern = "_peptide_lca\\.tsv$", full.names = TRUE)
+    if (length(cand) == 0) stop("no *_peptide_lca.tsv found")
+    file.copy(tail(sort(cand), 1), file.path(bundle_dir, "peptide_lca.tsv"),
+              overwrite = TRUE)   # prefer relaxed-evalue (*_e1) when both exist
   })
 
   # ---- Universal peptide length distribution (cheap; useful for every mode) ----
@@ -1931,6 +1942,37 @@ generate_dda_export_zip <- function(output_dir, mode = "standard",
 
   # ---- PROMPT.md — AI ingestion instructions (Claude / Gemini friendly) ----
   safe_section(manifest, "PROMPT.md (AI ingestion guide)", {
+    # Species summary COMPUTED from this dataset's LCA table — never hardcoded,
+    # so it is correct for the ocelot today and any other organism tomorrow.
+    lca_lines <- character(0)
+    lca_path <- file.path(bundle_dir, "peptide_lca.tsv")
+    if (file.exists(lca_path)) {
+      lt <- tryCatch(data.table::fread(lca_path), error = function(e) NULL)
+      if (!is.null(lt) && nrow(lt) > 0 && "category" %in% names(lt)) {
+        cat_tab <- sort(table(lt$category), decreasing = TRUE)
+        cat_str <- paste(sprintf("%s (%d)", names(cat_tab), as.integer(cat_tab)),
+                         collapse = ", ")
+        is_diag <- if ("diagnostic" %in% names(lt)) lt$diagnostic %in% c(1, "1", TRUE) else TRUE
+        host <- lt[lt$category == "host" & is_diag, ]
+        top_taxa <- if ("lca_name" %in% names(host) && nrow(host) > 0) {
+          tt <- sort(table(host$lca_name), decreasing = TRUE)
+          k <- seq_len(min(8, length(tt)))
+          paste(sprintf("%s (%d)", names(tt)[k], as.integer(tt)[k]), collapse = ", ")
+        } else "none"
+        lca_lines <- c(
+          "",
+          "## Species attribution (computed from this dataset's nr LCA)",
+          "",
+          sprintf("- %s de novo peptides placed by the lowest common ancestor of their nr BLAST hits.",
+                  format(nrow(lt), big.mark = ",")),
+          sprintf("- Category split: %s.", cat_str),
+          sprintf("- Top diagnostic (species/genus) host taxa: %s.", top_taxa),
+          "- Conserved peptides resolve only to family or higher and are NOT attributed to one species.",
+          "- microbiome / viral hits (incl. nr over-represented taxa such as SARS-CoV-2 spike) are NOT host signal.",
+          "- Weigh each hit by Casanovo score (-1..1; >=0 mass-consistent), query coverage, and e-value:",
+          "  a 100% identity over partial coverage (e.g. 18 of 24 residues) is NOT a full-length match.")
+      }
+    }
     prompt <- c(
       sprintf("# DE-LIMP DDA Export — %s mode", mode),
       "",
@@ -1950,7 +1992,9 @@ generate_dda_export_zip <- function(output_dir, mode = "standard",
       if (dir.exists(file.path(bundle_dir, "casanovo")))
         "- `casanovo/*.mztab` — per-file Casanovo de novo PSMs (sequences + scores)" else "",
       if (file.exists(file.path(bundle_dir, "diamond_hits.tsv")))
-        "- `diamond_hits.tsv` — DIAMOND BLAST hits for Casanovo peptides (SwissProt → TrEMBL cascade)" else "",
+        "- `diamond_hits.tsv` — DIAMOND BLAST hits for Casanovo peptides (nr or UniProt)" else "",
+      if (file.exists(file.path(bundle_dir, "peptide_lca.tsv")))
+        "- `peptide_lca.tsv` — per-peptide nr lowest-common-ancestor species/clade attribution" else "",
       "- `MANIFEST.txt` — what made it into the bundle, what was skipped, and why",
       "",
       "## Interpretation hints",
@@ -1970,6 +2014,7 @@ generate_dda_export_zip <- function(output_dir, mode = "standard",
           "- High N-term M = N-terminal Met excision incomplete; high C-term K/R = trypsin contamination.",
           sep = "\n"),
         ""),
+      lca_lines,
       ""
     )
     prompt <- prompt[nzchar(prompt)]
