@@ -3850,7 +3850,11 @@ echo "[DIAMOND] Done: $(date)"
     cal <- denovo_calibration()
     plotly::plot_ly(cal) %>%
       plotly::add_bars(x = ~bin, y = ~hit_rate, name = "nr hit-rate (%)",
-                       marker = list(color = "#1565c0")) %>%
+                       marker = list(color = "#1565c0"),
+                       hovertemplate = ~paste0(
+                         "Casanovo score ", bin, "<br>",
+                         round(hit_rate, 1), "% hit nr (", n_hit, " of ", n, " peptides)",
+                         "<extra></extra>")) %>%
       plotly::add_lines(x = ~bin, y = ~mean_pident, name = "mean %identity",
                         yaxis = "y2", line = list(color = "#e65100")) %>%
       plotly::layout(

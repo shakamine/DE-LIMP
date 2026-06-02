@@ -10,6 +10,7 @@ Quick-reference tables for known issues and their solutions. **This is the singl
 | Hidden tabs show letter fragments | `.navbar .nav-item[style*='display: none'] { width: 0 !important; overflow: hidden !important; }` |
 | `page_navbar(bg=...)` deprecation | Use `navbar_options = navbar_options(bg = ...)` (bslib 0.9.0+) |
 | `source()` doesn't start app | Use `shiny::runApp()` instead |
+| Server-code edits don't take effect after restarting the app | `runApp()` in the **same R session** can reuse cached function definitions — the VERSION banner updates (read fresh in `app.R`) while `R/server_*.R` functions stay stale, so changes look "not applied." Fully **restart the R session** (RStudio: Session → Restart R / ⌘⇧F10), then `runApp()`. Cost us ~3 confused rounds in v3.11.38–40. |
 | Selections disappear after clicking | Reactive loop — table must not depend on selection-derived reactives |
 | bslib `card()` doesn't render | Use plain `div()` for top-level nav_panel content |
 | `uiOutput` vanishes in `navset_card_tab` | Use static HTML + `shinyjs::html("div_id", content)`. `plotlyOutput` with `req()` is safe. |
