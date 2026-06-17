@@ -63,7 +63,7 @@ R/helpers*.R:            Pure utility functions (no Shiny reactivity)
 | `R/server_facility.R` | Core facility: reports, job history, QC dashboard |
 | `R/server_session.R` | Info modals, save/load session, reproducibility, About tab, unified history, notes |
 | `R/server_proteog_builder.R` + `helpers_proteog_assembly.R` / `helpers_rnaseq.R` / `helpers_slims.R` | Proteogenomics RNA-seq → FASTA pipeline (see `docs/PROTEOGENOMICS.md`) |
-| `R/helpers_denovo.R` / `helpers_dda.R` / `server_dda.R` / `server_denovo_viz.R` / `server_denovo_controls.R` | Cascadia/Sage/Casanovo de novo + DDA (feature branch) |
+| `R/helpers_denovo.R` / `helpers_dda.R` / `server_dda.R` / `server_denovo_viz.R` / `server_denovo_controls.R` | Cascadia/Sage/Casanovo de novo + DDA + de novo→homology species ID (on main, v4.0.0) |
 | `R/helpers_search.R` | `ssh_exec()`, `build_diann_flags()`, `generate_sbatch_script()`, `generate_parallel_scripts()`, `generate_search_info()`, `check_cluster_resources()`, UniProt/NCBI search, unified activity log, SSH browser helpers, SLURM proxy |
 | `R/helpers_instrument.R` | `parse_timstof_metadata()`, `parse_thermo_metadata()`, `extract_tic_timstof()`, `compute_tic_metrics()`, `diagnose_run()`, instrument formatters |
 | `VERSION` | Single-line app version, read at startup into `values$app_version` |
@@ -143,4 +143,4 @@ Quick-reference fix tables live in **`docs/GOTCHAS.md`**, grouped by subsystem. 
 - HPC paths/containers: `docs/HPC_PATHS.md`. **Queue switching** (genome-center-grp/high ↔ publicgrp/low): `docs/QUEUE_SWITCHING.md`.
 
 ## Version History
-Current version: **v3.11.0** — see `VERSION` and `CHANGELOG.md` for the full history and per-release details. Unreleased work + code-audit follow-ups are tracked in `docs/TODO.md`. (Cascadia/Sage/Casanovo de novo + DDA is on a feature branch.)
+Current version: **v4.0.0** — see `VERSION` and `CHANGELOG.md` for the full history and per-release details. Unreleased work + code-audit follow-ups are tracked in `docs/TODO.md`. (Cascadia/Sage/Casanovo de novo + DDA + de novo→homology species ID merged to main in v4.0.0.)
