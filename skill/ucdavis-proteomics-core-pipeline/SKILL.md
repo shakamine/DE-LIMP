@@ -57,6 +57,39 @@ the scripts handle it.
 
 ## Flow
 
+### 0a. Access & environment — ASK THIS FIRST
+**Claude Code runs locally on the user's machine.** Heavy steps either run locally or
+are driven on **HIVE over SSH with the user's private key** — they do NOT run Claude
+Code on HIVE. Ask two questions, then verify and pick a mode:
+
+1. **"Do you have access to UC Davis HIVE (an account + an SSH private key)?"**
+   If yes, **ask where their private key is** (e.g. `~/.ssh/id_ed25519`).
+2. **"Are you a member of the UC Davis Proteomics Core?"**
+
+Verify (don't just trust the answers):
+```
+bash scripts/check_access.sh <hive_user> <private_key_path>
+```
+Read `recommended_mode` + `facility_software_available`, then:
+
+- **HIVE = yes → `hive_remote`:** drive HIVE over SSH from the local Claude Code
+  (`export HIVE_USER=… HIVE_KEY=…`; use `scripts/hive_exec.sh '<cmd>'`). The search
+  runs as a **SLURM job** (`run_search.py --sbatch` → `hive_exec.sh 'sbatch job.sh'`),
+  never the login node. HIVE gives **compute**; the Core software is separate (next).
+- **Core member = yes (with HIVE) → reuse the installed software** in
+  `/quobyte/proteomics-grp/`: `acquire_tools.sh` finds the DIA-NN `.sif`,
+  `fetch_fasta.py --hive` reuses pre-staged FASTAs. No rebuilding.
+- **HIVE = yes but NOT Core → rebuild the toolchain in your own HIVE home** (you can't
+  read the group dir). Follow `references/access.md` → "Rebuild on HIVE" (run
+  `setup.sh` + `acquire_tools.sh` + `fetch_fasta.py` on HIVE via `hive_exec.sh`). **List
+  these steps for the user — do not guess.**
+- **Core = yes but NO HIVE →** the Core software is on HIVE, unreachable without HIVE
+  access → fall back to **local**; suggest requesting a HIVE account.
+- **Both = no → `local`:** `setup.sh` installs the toolchain on the user's machine
+  (no admin); public engines (DIA-NN Academia, Sage). Self-contained, works fully.
+
+Tell the user which mode you're using and why. → full runbook: `references/access.md`.
+
 ### 0. One-time setup (install everything that's missing)
 ```
 bash scripts/setup.sh
